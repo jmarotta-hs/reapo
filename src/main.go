@@ -3,16 +3,21 @@ package main
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/invopop/jsonschema"
 )
+
+//go:embed system_prompt.txt
+var systemPromptContent string
 
 type ToolDefinition struct {
 	Name        string                         `json:"name"`
@@ -61,12 +66,8 @@ func main() {
 		return scanner.Text(), true
 	}
 
-	chatSystemPrompt := `You are Claude, a helpful AI assistant created by Anthropic. You have access to various tools that can help you assist users more effectively. Use these tools when they would be beneficial for answering questions or completing tasks.
-
-Be helpful, harmless, and honest in all your interactions.`
-
-	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition}
-	agent := NewAgent(&client, getUserMessage, tools, chatSystemPrompt)
+	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition, TodoReadDefinition, TodoWriteDefinition, RunTaskDefinition}
+	agent := NewAgent(&client, getUserMessage, tools, string(systemPromptContent))
 	err := agent.Run(context.TODO())
 	if err != nil {
 		fmt.Printf("Error: %s\n", err.Error())
@@ -120,6 +121,47 @@ func (a *Agent) executeTool(id, name string, input json.RawMessage) anthropic.Co
 	return anthropic.NewToolResultBlock(id, response, false)
 }
 
+type toolExecutionResult struct {
+	index  int
+	result anthropic.ContentBlockParamUnion
+	err    error
+}
+
+type toolUseInfo struct {
+	id    string
+	name  string
+	input json.RawMessage
+}
+
+func (a *Agent) executeToolsConcurrently(toolUses []toolUseInfo) []anthropic.ContentBlockParamUnion {
+	if len(toolUses) == 0 {
+		return nil
+	}
+
+	results := make([]anthropic.ContentBlockParamUnion, len(toolUses))
+	resultChan := make(chan toolExecutionResult, len(toolUses))
+
+	// Kick off all tools concurrently
+	for i, toolUse := range toolUses {
+		go func(index int, tu toolUseInfo) {
+			result := a.executeTool(tu.id, tu.name, tu.input)
+			resultChan <- toolExecutionResult{
+				index:  index,
+				result: result,
+				err:    nil,
+			}
+		}(i, toolUse)
+	}
+
+	// Collect all results
+	for i := 0; i < len(toolUses); i++ {
+		execResult := <-resultChan
+		results[execResult.index] = execResult.result
+	}
+
+	return results
+}
+
 func (a *Agent) Run(ctx context.Context) error {
 	if a.getUserMessage == nil {
 		return fmt.Errorf("getUserMessage function required for interactive mode")
@@ -147,16 +189,22 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		conversation = append(conversation, message.ToParam())
 
-		toolResults := []anthropic.ContentBlockParamUnion{}
+		toolUses := []toolUseInfo{}
 		for _, content := range message.Content {
 			switch content.Type {
 			case "text":
 				fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", content.Text)
 			case "tool_use":
-				result := a.executeTool(content.ID, content.Name, content.Input)
-				toolResults = append(toolResults, result)
+				toolUses = append(toolUses, toolUseInfo{
+					id:    content.ID,
+					name:  content.Name,
+					input: content.Input,
+				})
 			}
 		}
+
+		toolResults := a.executeToolsConcurrently(toolUses)
+
 		if len(toolResults) == 0 {
 			readUserInput = true
 			continue
@@ -184,7 +232,7 @@ func (a *Agent) RunTask(ctx context.Context, task, context string) (string, erro
 
 		conversation = append(conversation, message.ToParam())
 
-		toolResults := []anthropic.ContentBlockParamUnion{}
+		toolUses := []toolUseInfo{}
 		hasToolUse := false
 
 		for _, content := range message.Content {
@@ -193,8 +241,11 @@ func (a *Agent) RunTask(ctx context.Context, task, context string) (string, erro
 				finalResponse = content.Text
 			case "tool_use":
 				hasToolUse = true
-				result := a.executeTool(content.ID, content.Name, content.Input)
-				toolResults = append(toolResults, result)
+				toolUses = append(toolUses, toolUseInfo{
+					id:    content.ID,
+					name:  content.Name,
+					input: content.Input,
+				})
 			}
 		}
 
@@ -202,6 +253,7 @@ func (a *Agent) RunTask(ctx context.Context, task, context string) (string, erro
 			break
 		}
 
+		toolResults := a.executeToolsConcurrently(toolUses)
 		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
 	}
 
@@ -213,6 +265,7 @@ func (a *Agent) RunTask(ctx context.Context, task, context string) (string, erro
 }
 
 /* Tools */
+
 func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
 	reflector := jsonschema.Reflector{
 		AllowAdditionalProperties: false,
@@ -383,6 +436,126 @@ func createNewFile(filePath, content string) (string, error) {
 	return fmt.Sprintf("Successfully created file %s", filePath), nil
 }
 
+/* TODOs for executing TaskAgent */
+
+type Todo struct {
+	ID          string     `json:"id"`
+	Text        string     `json:"text"`
+	Completed   bool       `json:"completed"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+// Global in-memory storage
+var todos []Todo
+var todoCounter int
+
+func generateTodoID() string {
+	todoCounter++
+	return fmt.Sprintf("todo_%d", todoCounter)
+}
+
+var TodoReadDefinition = ToolDefinition{
+	Name:        "todoread",
+	Description: "List all todos with their current status (completed or pending).",
+	InputSchema: TodoReadInputSchema,
+	Function:    TodoRead,
+}
+
+type TodoReadInput struct {
+	// No parameters needed for listing
+}
+
+var TodoReadInputSchema = GenerateSchema[TodoReadInput]()
+
+func TodoRead(input json.RawMessage) (string, error) {
+	if len(todos) == 0 {
+		return "No todos found", nil
+	}
+
+	result := "Todos:\n"
+	for _, todo := range todos {
+		status := "[ ]"
+		if todo.Completed {
+			status = "[x]"
+		}
+		result += fmt.Sprintf("%s %s (ID: %s)\n", status, todo.Text, todo.ID)
+	}
+
+	return result, nil
+}
+
+/* Todo Write Tool */
+
+var TodoWriteDefinition = ToolDefinition{
+	Name:        "todowrite",
+	Description: "Create new todos or mark existing todos as completed. Use 'add' to create a new todo or 'complete' to mark a todo as done.",
+	InputSchema: TodoWriteInputSchema,
+	Function:    TodoWrite,
+}
+
+type TodoWriteInput struct {
+	Action string `json:"action" jsonschema_description:"Action to perform: 'add' to create a new todo, 'complete' to mark a todo as completed"`
+	Text   string `json:"text,omitempty" jsonschema_description:"Todo text (required for 'add' action)"`
+	ID     string `json:"id,omitempty" jsonschema_description:"Todo ID (required for 'complete' action)"`
+}
+
+var TodoWriteInputSchema = GenerateSchema[TodoWriteInput]()
+
+func TodoWrite(input json.RawMessage) (string, error) {
+	var todoInput TodoWriteInput
+	if err := json.Unmarshal(input, &todoInput); err != nil {
+		return "", fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	switch todoInput.Action {
+	case "add":
+		return addTodo(todoInput.Text)
+	case "complete":
+		return completeTodo(todoInput.ID)
+	default:
+		return "", fmt.Errorf("invalid action: %s. Use 'add' or 'complete'", todoInput.Action)
+	}
+}
+
+func addTodo(text string) (string, error) {
+	if text == "" {
+		return "", fmt.Errorf("todo text cannot be empty")
+	}
+
+	newTodo := Todo{
+		ID:        generateTodoID(),
+		Text:      text,
+		Completed: false,
+		CreatedAt: time.Now(),
+	}
+
+	todos = append(todos, newTodo)
+	return fmt.Sprintf("Added todo: %s (ID: %s)", newTodo.Text, newTodo.ID), nil
+}
+
+func completeTodo(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("todo ID cannot be empty")
+	}
+
+	for i, todo := range todos {
+		if todo.ID == id {
+			if todo.Completed {
+				return fmt.Sprintf("Todo '%s' is already completed", todo.Text), nil
+			}
+
+			now := time.Now()
+			todos[i].Completed = true
+			todos[i].CompletedAt = &now
+
+			return fmt.Sprintf("Completed todo: %s", todo.Text), nil
+		}
+	}
+
+	return "", fmt.Errorf("todo with ID %s not found", id)
+}
+
 /* TaskAgent */
 
 var RunTaskDefinition = ToolDefinition{
@@ -410,17 +583,25 @@ func RunTask(input json.RawMessage) (string, error) {
 		return "", fmt.Errorf("task cannot be empty")
 	}
 
-	taskSystemPrompt := `You are a focused task execution agent with access to tools. Your job is to:
-1. Analyze the given task carefully
-2. Use available tools as needed to gather information or perform actions
-3. Execute the task step by step
-4. Provide a concise summary of your findings/results
-5. Keep your response focused and actionable
+	taskSystemPrompt := `Launch a new agent that has access to the following tools: ReadFile, WriteFile, ListFiles, TodoRead, TodoWrite. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries, use the Agent tool to perform the search for you.
 
-Use tools when they would help accomplish the task more effectively.`
+When to use the Agent tool:
+- If you are searching for a keyword like "config" or "logger", or for questions like "which file does X?", the Agent tool is strongly recommended
+
+When NOT to use the Agent tool:
+- If you want to read a specific file path, use the Read or Glob tool instead of the Agent tool, to find the match more quickly
+- If you are searching for a specific class definition like "class Foo", use the Glob tool instead, to find the match more quickly
+- If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Agent tool, to find the match more quickly
+
+Usage notes:
+1. For maximum efficiency, whenever you need to perform multiple independent operations, invoke all relevant tools simultaneously rather than sequentially
+2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.
+3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
+4. The agent's outputs should generally be trusted
+5. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent`
 
 	client := anthropic.NewClient()
-	availableTools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition}
+	availableTools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition, TodoReadDefinition, TodoWriteDefinition}
 	taskAgent := NewTaskAgent(&client, availableTools, taskSystemPrompt)
 
 	result, err := taskAgent.RunTask(context.Background(), runTaskInput.Task, runTaskInput.Context)
