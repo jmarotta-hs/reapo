@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"reapo/internal/logger"
 	"reapo/internal/schema"
 )
 
@@ -52,7 +53,7 @@ Usage notes:
 
 	client := anthropic.NewClient()
 	availableTools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition, TodoReadDefinition, TodoWriteDefinition}
-	
+
 	// Create a temporary agent for task execution
 	taskAgent := &TaskAgent{
 		client:       &client,
@@ -205,8 +206,8 @@ func (ta *TaskAgent) executeTool(id, name string, input json.RawMessage) anthrop
 		return anthropic.NewToolResultBlock(id, "tool not found", true)
 	}
 
-	// Simple logging - could be customized based on agent type if needed
-	fmt.Printf("\u001b[92mtool\u001b[0m: %s(%s)\n", name, input)
+	// Log tool execution to file instead of stdout to avoid TUI corruption
+	logger.Tool(name, string(input))
 
 	response, err := toolDef.Function(input)
 	if err != nil {

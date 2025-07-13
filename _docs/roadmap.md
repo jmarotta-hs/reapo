@@ -1,0 +1,6 @@
+- Create Vim Commands for textarea
+- Add tools for parity with opencode
+- Add slash commands
+- Add editor slash command
+- Add @
+- Drill down to individual files with chat on left and file on right

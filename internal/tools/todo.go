@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"reapo/internal/schema"
@@ -17,11 +18,16 @@ type Todo struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
-// Global in-memory storage
-var todos []Todo
-var todoCounter int
+// Global in-memory storage with thread safety
+var (
+	todos       []Todo
+	todoCounter int
+	todosMutex  sync.RWMutex
+)
 
 func generateTodoID() string {
+	todosMutex.Lock()
+	defer todosMutex.Unlock()
 	todoCounter++
 	return fmt.Sprintf("todo_%d", todoCounter)
 }
@@ -39,6 +45,9 @@ type TodoReadInput struct {
 }
 
 func TodoRead(input json.RawMessage) (string, error) {
+	todosMutex.RLock()
+	defer todosMutex.RUnlock()
+	
 	if len(todos) == 0 {
 		return "No todos found", nil
 	}
@@ -97,7 +106,10 @@ func addTodo(text string) (string, error) {
 		CreatedAt: time.Now(),
 	}
 
+	todosMutex.Lock()
 	todos = append(todos, newTodo)
+	todosMutex.Unlock()
+	
 	return fmt.Sprintf("Added todo: %s (ID: %s)", newTodo.Text, newTodo.ID), nil
 }
 
@@ -106,6 +118,9 @@ func completeTodo(id string) (string, error) {
 		return "", fmt.Errorf("todo ID cannot be empty")
 	}
 
+	todosMutex.Lock()
+	defer todosMutex.Unlock()
+	
 	for i, todo := range todos {
 		if todo.ID == id {
 			if todo.Completed {

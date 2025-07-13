@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"reapo/internal/logger"
 	"reapo/internal/tools"
 )
 
@@ -50,12 +53,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	conversation := []anthropic.MessageParam{}
-	fmt.Println("Chat with Claude (use 'ctrl-c' to quit)")
+	log.Println("Chat with Claude (use 'ctrl-c' to quit)")
 
 	readUserInput := true
 	for {
 		if readUserInput {
-			fmt.Print("\u001b[94mYou\u001b[0m: ")
+			log.Print("\u001b[94mYou\u001b[0m: ")
 			userInput, ok := a.getUserMessage()
 			if !ok {
 				break
@@ -75,7 +78,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		for _, content := range message.Content {
 			switch content.Type {
 			case "text":
-				fmt.Printf("\u001b[93mClaude\u001b[0m: %s\n", content.Text)
+				log.Printf("\u001b[93mClaude\u001b[0m: %s\n", content.Text)
 			case "tool_use":
 				toolUses = append(toolUses, toolUseInfo{
 					id:    content.ID,
@@ -96,6 +99,90 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// RunNonInteractive executes a single input message and runs the conversation loop without interactive prompts
+func (a *Agent) RunNonInteractive(ctx context.Context, input string) error {
+	conversation := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock(input)),
+	}
+
+	for {
+		message, err := a.runInference(ctx, conversation)
+		if err != nil {
+			return err
+		}
+		conversation = append(conversation, message.ToParam())
+
+		toolUses := []toolUseInfo{}
+		hasToolUse := false
+
+		for _, content := range message.Content {
+			switch content.Type {
+			case "text":
+				log.Print(content.Text)
+			case "tool_use":
+				hasToolUse = true
+				toolUses = append(toolUses, toolUseInfo{
+					id:    content.ID,
+					name:  content.Name,
+					input: content.Input,
+				})
+			}
+		}
+
+		if !hasToolUse {
+			break
+		}
+
+		toolResults := a.executeToolsConcurrently(toolUses)
+		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
+	}
+
+	return nil
+}
+
+// RunSingleMessage executes a single input message and returns the response text
+func (a *Agent) RunSingleMessage(ctx context.Context, input string) (string, error) {
+	conversation := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock(input)),
+	}
+
+	var responseText strings.Builder
+
+	for {
+		message, err := a.runInference(ctx, conversation)
+		if err != nil {
+			return "", err
+		}
+		conversation = append(conversation, message.ToParam())
+
+		toolUses := []toolUseInfo{}
+		hasToolUse := false
+
+		for _, content := range message.Content {
+			switch content.Type {
+			case "text":
+				responseText.WriteString(content.Text)
+			case "tool_use":
+				hasToolUse = true
+				toolUses = append(toolUses, toolUseInfo{
+					id:    content.ID,
+					name:  content.Name,
+					input: content.Input,
+				})
+			}
+		}
+
+		if !hasToolUse {
+			break
+		}
+
+		toolResults := a.executeToolsConcurrently(toolUses)
+		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
+	}
+
+	return responseText.String(), nil
 }
 
 // RunTask executes a single task and returns the result
@@ -224,8 +311,8 @@ func (a *Agent) executeTool(id, name string, input json.RawMessage) anthropic.Co
 		return anthropic.NewToolResultBlock(id, "tool not found", true)
 	}
 
-	// Simple logging - could be customized based on agent type if needed
-	fmt.Printf("\u001b[92mtool\u001b[0m: %s(%s)\n", name, input)
+	// Log tool execution to file instead of stdout to avoid TUI corruption
+	logger.Tool(name, string(input))
 
 	response, err := toolDef.Function(input)
 	if err != nil {

@@ -61,6 +61,6 @@ func (r *Registry) Execute(name string, input json.RawMessage) (string, error) {
 	if !exists {
 		return "", fmt.Errorf("tool %s not found", name)
 	}
-	
+
 	return tool.Function(input)
 }
