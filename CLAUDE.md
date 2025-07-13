@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Build and Run
 ```bash
 # Build the application
-go build -o reapo src/main.go
+go build -o reapo cmd/reapo/main.go
 
 # Run directly from source
-go run src/main.go
+go run cmd/reapo/main.go
 
 # Install dependencies
 go mod download
