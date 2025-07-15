@@ -1,6 +1,12 @@
-- Create Vim Commands for textarea
+- Refactor vimtextarea and cmd so its cleaner and visual components are separated
+- Refactor agents
+- Add :q and :quit and :q!
 - Add tools for parity with opencode
+- mark todo as in progress
 - Add slash commands
 - Add editor slash command
 - Add @
 - Drill down to individual files with chat on left and file on right
+- Indicate when request is sent with spinner
+- vim-improvements
+- Add line in insert

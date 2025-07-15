@@ -10,10 +10,10 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"reapo/internal/agent"
+	"reapo/internal/components/vimtextarea"
 	"reapo/internal/logger"
 	"reapo/internal/tools"
 )
@@ -31,7 +31,7 @@ type Message struct {
 // TUIModel represents the Bubble Tea model for the TUI
 type TUIModel struct {
 	messages []Message
-	textarea textarea.Model
+	textarea vimtextarea.Model
 	viewport struct {
 		width  int
 		height int
@@ -46,7 +46,7 @@ type TUIModel struct {
 
 // Init initializes the TUI model
 func (m TUIModel) Init() tea.Cmd {
-	return textarea.Blink
+	return m.textarea.Init()
 }
 
 // Update handles messages and updates the model
@@ -57,7 +57,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.viewport.width = msg.Width
 		m.viewport.height = msg.Height
-		m.textarea.SetWidth(msg.Width - 4) // Account for border padding
+		m.textarea.SetWidth(msg.Width - 6) // Account for border padding + prefix
 		m.ready = true
 		return m, nil
 
@@ -66,7 +66,21 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.String() == "ctrl+c":
 			return m, tea.Quit
-		case msg.String() == "ctrl+s":
+		case msg.String() == "enter" && m.textarea.Mode() == vimtextarea.Normal:
+			// Enter sends message in Normal mode
+			if m.textarea.Value() != "" && !m.processing {
+				userMessage := m.textarea.Value()
+				m.messages = append(m.messages, Message{
+					Role:    "user",
+					Content: userMessage,
+				})
+				m.textarea.SetValue("")
+				m.processing = true
+				return m, m.processMessage(userMessage)
+			}
+			return m, nil
+		case msg.String() == "ctrl+s" && (m.textarea.Mode() == vimtextarea.Insert || m.textarea.Mode() == vimtextarea.Visual):
+			// Ctrl+S sends message in Insert and Visual modes
 			if m.textarea.Value() != "" && !m.processing {
 				userMessage := m.textarea.Value()
 				m.messages = append(m.messages, Message{
@@ -94,9 +108,9 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.textarea, cmd = m.textarea.Update(msg)
 
 	// Dynamically adjust textarea height based on content
-	lines := strings.Count(m.textarea.Value(), "\n") + 2
+	lines := strings.Count(m.textarea.Value(), "\n") + 1
 
-	maxHeight := min(max((m.viewport.height)/2, 1), 12) // Between 3-8 lines
+	maxHeight := min(max((m.viewport.height)/2, 1), 12) // Between 1-12 lines
 	height := min(max(lines, 1), maxHeight)
 
 	if height != m.textarea.Height() {
@@ -113,16 +127,14 @@ func (m TUIModel) View() string {
 	}
 
 	// Styles using terminal colors that adapt to user's theme
-	userStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))                // Blue
-	assistantStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))           // Yellow
-	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))               // Red
+	userStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))      // Blue
+	assistantStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // Yellow
+	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))     // Red
 
 	// Calculate heights: total - textarea height - border (2 lines) - footer line - spacing
 	textareaHeight := m.textarea.Height()
 	chatHeight := m.viewport.height - textareaHeight - 4
-	if chatHeight < 1 {
-		chatHeight = 1
-	}
+	chatHeight = max(chatHeight, 1)
 
 	// Build chat messages
 	var chatLines []string
@@ -142,7 +154,6 @@ func (m TUIModel) View() string {
 
 		chatLines = append(chatLines, style.Render(prefix+msg.Content))
 	}
-
 
 	// Limit chat lines to fit viewport
 	if len(chatLines) > chatHeight {
@@ -180,22 +191,54 @@ func (m TUIModel) View() string {
 	rightText := "claude-sonnet-4"
 	centerText := pwd
 
-	// Calculate spacing for justify-between layout
+	// Create vim mode indicator with different background
+	var modeText string
+	var modeColor string
+	switch m.textarea.Mode() {
+	case vimtextarea.Normal:
+		modeText = " NORMAL "
+		modeColor = "4" // Blue background for normal mode
+	case vimtextarea.Insert:
+		modeText = " INSERT "
+		modeColor = "2" // Green background for insert mode
+	case vimtextarea.Visual:
+		modeText = " VISUAL "
+		modeColor = "5" // Magenta background for visual mode
+	}
+
+	modeIndicator := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("0")). // Black text
+		Background(lipgloss.Color(modeColor)).
+		Render(modeText)
+
+	// Calculate remaining width for main footer content
+	modeIndicatorWidth := len(modeText)
+	remainingWidth := m.viewport.width - modeIndicatorWidth
+
+	// Calculate spacing for justify-between layout in remaining space
 	totalContentWidth := len(leftText) + len(centerText) + len(rightText)
-	availableWidth := m.viewport.width - 2 // Account for padding
-	spacingWidth := availableWidth - totalContentWidth
+	// Account for padding (2 spaces) in the remaining width
+	spacingWidth := remainingWidth - totalContentWidth - 2
+
+	// Ensure we don't have negative spacing
+	if spacingWidth < 0 {
+		spacingWidth = 0
+	}
 
 	// Distribute spacing: left-center and center-right
 	leftSpacing := spacingWidth / 2
 	rightSpacing := spacingWidth - leftSpacing
 
-	footerText := leftText + strings.Repeat(" ", leftSpacing) + centerText + strings.Repeat(" ", rightSpacing) + rightText
-	footer := lipgloss.NewStyle().
+	mainFooterText := leftText + strings.Repeat(" ", leftSpacing) + centerText + strings.Repeat(" ", rightSpacing) + rightText
+	mainFooter := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("245")).
 		Background(lipgloss.Color("0")).
-		Width(m.viewport.width).
+		Width(remainingWidth).
 		Padding(0, 1).
-		Render(footerText)
+		Render(mainFooterText)
+
+	// Combine mode indicator and main footer
+	footer := modeIndicator + mainFooter
 
 	return chat + input + "\n\n\n" + footer
 }
@@ -234,6 +277,7 @@ func main() {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 	defer logger.Close()
+	logger.Debug("Starting reapo...")
 
 	client := anthropic.NewClient()
 
@@ -296,10 +340,9 @@ func runNonInteractive(client anthropic.Client, toolDefs []tools.ToolDefinition,
 }
 
 func runTUI(client anthropic.Client, toolDefs []tools.ToolDefinition) {
-	// Initialize textarea
-	ta := textarea.New()
-	ta.Placeholder = "Type a message... (Ctrl+S to send)"
-	ta.ShowLineNumbers = false
+	// Initialize vim textarea
+	ta := vimtextarea.New()
+	ta.SetPlaceholder("Type a message... (Enter in Normal, Ctrl+S in Insert/Visual)")
 	ta.Focus()
 	ta.SetHeight(1)
 
