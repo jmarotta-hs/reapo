@@ -1,8 +1,8 @@
 package vimtextarea
 
 import (
-	"strings"
 	"reapo/internal/logger"
+	"strings"
 )
 
 // Text editing methods

@@ -17,7 +17,9 @@ var (
 // Logger provides TUI-safe logging functionality
 type Logger struct {
 	fileLogger *log.Logger
+	chatLogger *log.Logger
 	logFile    *os.File
+	chatFile   *os.File
 	mu         sync.Mutex
 }
 
@@ -38,19 +40,30 @@ func newLogger() (*Logger, error) {
 		return nil, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	// Open log file
+	// Open main log file
 	logPath := filepath.Join(logsDir, "reapo.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
-	// Create file logger
+	// Open chat log file
+	chatPath := filepath.Join(logsDir, "chat.log")
+	chatFile, err := os.OpenFile(chatPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		logFile.Close()
+		return nil, fmt.Errorf("failed to open chat log file: %w", err)
+	}
+
+	// Create loggers
 	fileLogger := log.New(logFile, "", log.LstdFlags|log.Lshortfile)
+	chatLogger := log.New(chatFile, "", log.LstdFlags)
 
 	return &Logger{
 		fileLogger: fileLogger,
+		chatLogger: chatLogger,
 		logFile:    logFile,
+		chatFile:   chatFile,
 	}, nil
 }
 
@@ -82,19 +95,44 @@ func Tool(name string, input string) {
 	}
 }
 
-// log writes a formatted message to the log file
+// Chat logs conversation data to the dedicated chat log file
+func Chat(event string, data interface{}) {
+	if instance != nil {
+		instance.chatLog(event, data)
+	}
+}
+
+// log writes a formatted message to the main log file
 func (l *Logger) log(level, format string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	message := fmt.Sprintf(format, args...)
 	l.fileLogger.Printf("[%s] %s", level, message)
 }
 
-// Close closes the log file
+// chatLog writes conversation data to the chat log file
+func (l *Logger) chatLog(event string, data interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.chatLogger.Printf("[%s] %+v", event, data)
+}
+
+// Close closes both log files
 func Close() error {
-	if instance != nil && instance.logFile != nil {
-		return instance.logFile.Close()
+	if instance != nil {
+		var err1, err2 error
+		if instance.logFile != nil {
+			err1 = instance.logFile.Close()
+		}
+		if instance.chatFile != nil {
+			err2 = instance.chatFile.Close()
+		}
+		if err1 != nil {
+			return err1
+		}
+		return err2
 	}
 	return nil
 }

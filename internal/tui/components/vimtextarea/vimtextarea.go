@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"reapo/internal/tui/completion"
 )
 
 func New() Model {
@@ -242,8 +243,47 @@ func (m Model) handleNormalMode(key string) (Model, tea.Cmd) {
 }
 
 func (m Model) handleInsertMode(key string, msg tea.KeyMsg) (Model, tea.Cmd) {
+	// Handle completion navigation first
+	if m.completionState.Active {
+		switch key {
+		case "esc":
+			m.completionState.Reset()
+			return m, nil
+		case "ctrl+n", "down":
+			m.completionState.SelectNext()
+			return m, nil
+		case "ctrl+p", "up":
+			m.completionState.SelectPrev()
+			return m, nil
+		case "ctrl+y", "enter":
+			// Insert selected completion
+			if selected := m.completionState.GetSelectedItem(); selected != nil {
+				m = m.insertCompletion(selected.Text)
+				m.completionState.Reset()
+			}
+			return m, nil
+		case "backspace":
+			m = m.backspace()
+			// Check if we should trigger or update completion
+			m = m.checkAndTriggerCompletion()
+			return m, nil
+		case "left", "right":
+			// Let the text area handle cursor movement, then check completion
+			// Fall through to normal handling
+		default:
+			// For regular character input during completion
+			if len(msg.Runes) > 0 {
+				m = m.insertText(string(msg.Runes))
+				m = m.updateCompletion()
+				return m, nil
+			}
+		}
+	}
+
+	// Normal insert mode handling
 	switch key {
 	case "esc":
+		m.completionState.Reset()
 		m = m.endInsertSession()
 		m.mode = Normal
 		m.cursor = m.moveLeft(1)
@@ -252,11 +292,37 @@ func (m Model) handleInsertMode(key string, msg tea.KeyMsg) (Model, tea.Cmd) {
 		m = m.insertNewLine()
 	case "backspace":
 		m = m.backspace()
+		// Check if we should trigger completion after backspace
+		m = m.checkAndTriggerCompletion()
 	case "tab":
 		m = m.insertText("\t")
+	case "left":
+		m.cursor = m.moveLeft(1)
+		m = m.adjustScroll()
+		m = m.checkAndTriggerCompletion()
+	case "right":
+		m.cursor = m.moveRight(1)
+		m = m.adjustScroll()
+		m = m.checkAndTriggerCompletion()
+	case "up":
+		m.cursor = m.moveUp(1)
+		m = m.adjustScroll()
+		m.completionState.Reset() // Reset completion when moving lines
+	case "down":
+		m.cursor = m.moveDown(1)
+		m = m.adjustScroll()
+		m.completionState.Reset() // Reset completion when moving lines
 	default:
 		if len(msg.Runes) > 0 {
-			m = m.insertText(string(msg.Runes))
+			char := msg.Runes[0]
+
+			// Check for completion triggers
+			if m.shouldTriggerCompletion(char) {
+				m = m.insertText(string(msg.Runes))
+				m = m.triggerCompletion(char)
+			} else {
+				m = m.insertText(string(msg.Runes))
+			}
 		}
 	}
 
@@ -475,4 +541,247 @@ func (m Model) Focused() bool {
 
 func (m Model) Mode() Mode {
 	return m.mode
+}
+
+func (m Model) CompletionState() completion.CompletionState {
+	return m.completionState
+}
+
+func (m *Model) SetCompletionEngine(engine *completion.CompletionEngine) {
+	m.completionEngine = engine
+}
+
+func (m Model) CompletionEngine() *completion.CompletionEngine {
+	return m.completionEngine
+}
+
+func (m Model) shouldTriggerCompletion(char rune) bool {
+	if m.cursor.Row >= len(m.content) {
+		return false
+	}
+
+	line := m.content[m.cursor.Row]
+
+	// For slash commands, must be at start of line
+	if char == '/' {
+		return m.cursor.Col == 0
+	}
+
+	// For @ completions, check if not escaped
+	if char == '@' {
+		if m.cursor.Col == 0 {
+			return true
+		}
+
+		if m.cursor.Col > 0 && m.cursor.Col <= len(line) {
+			prevChar := line[m.cursor.Col-1]
+			// Don't trigger if escaped with \ or inside quotes
+			return prevChar != '\\' && prevChar != '"'
+		}
+	}
+
+	return false
+}
+
+func (m Model) extractCompletionQuery(trigger rune) (string, Position) {
+	if m.cursor.Row >= len(m.content) {
+		return "", m.cursor
+	}
+
+	line := m.content[m.cursor.Row]
+	startPos := m.cursor
+
+	// Find the start of the completion (trigger character)
+	for i := m.cursor.Col; i >= 0; i-- {
+		if i < len(line) && rune(line[i]) == trigger {
+			startPos = Position{Row: m.cursor.Row, Col: i}
+			break
+		}
+	}
+
+	// Extract query from trigger position to current position
+	if startPos.Col < len(line) && m.cursor.Col <= len(line) {
+		query := line[startPos.Col:m.cursor.Col]
+		return query, startPos
+	}
+
+	return "", startPos
+}
+
+func (m Model) triggerCompletion(trigger rune) Model {
+	query, startPos := m.extractCompletionQuery(trigger)
+
+	m.completionState.Active = true
+	m.completionState.Trigger = trigger
+	m.completionState.Query = query
+	m.completionState.Selected = 0
+
+	// Store start position for completion insertion (using a field we'll add)
+	m.completionStartPos = startPos
+
+	if trigger == '/' {
+		m.completionState.Type = completion.SlashCommand
+		// Remove leading '/' from query for slash commands
+		if strings.HasPrefix(query, "/") {
+			m.completionState.Query = query[1:]
+		}
+	} else {
+		m.completionState.Type = completion.FileFolder
+		// Remove leading '@' from query for file completions
+		if strings.HasPrefix(query, "@") {
+			m.completionState.Query = query[1:]
+		}
+	}
+
+	m = m.updateCompletionItems()
+	return m
+}
+
+func (m Model) updateCompletion() Model {
+	if !m.completionState.Active {
+		return m
+	}
+
+	// Extract current query
+	query, startPos := m.extractCompletionQuery(m.completionState.Trigger)
+	m.completionStartPos = startPos
+
+	// If query becomes empty (user deleted trigger), deactivate completion
+	if !strings.Contains(query, string(m.completionState.Trigger)) {
+		m.completionState.Reset()
+		return m
+	}
+
+	// Update query, removing trigger prefix
+	if m.completionState.Trigger == '/' && strings.HasPrefix(query, "/") {
+		m.completionState.Query = query[1:]
+	} else if m.completionState.Trigger == '@' && strings.HasPrefix(query, "@") {
+		m.completionState.Query = query[1:]
+	} else {
+		m.completionState.Query = query
+	}
+
+	m = m.updateCompletionItems()
+	return m
+}
+
+func (m Model) updateCompletionItems() Model {
+	if m.completionEngine == nil {
+		return m
+	}
+
+	items := m.completionEngine.GetCompletions(m.completionState.Trigger, m.completionState.Query)
+	m.completionState.Items = items
+
+	// Reset selection if items changed
+	if len(items) > 0 && m.completionState.Selected >= len(items) {
+		m.completionState.Selected = 0
+	}
+
+	// Deactivate if no items
+	if len(items) == 0 {
+		m.completionState.Reset()
+	}
+
+	return m
+}
+
+func (m Model) insertCompletion(text string) Model {
+	if !m.completionState.Active {
+		return m
+	}
+
+	// Replace from start position to current cursor with completion text
+	startPos := m.completionStartPos
+	endPos := m.cursor
+
+	if startPos.Row < len(m.content) && endPos.Row < len(m.content) {
+		line := m.content[startPos.Row]
+
+		// Build new line with completion
+		var newLine string
+		if startPos.Col > 0 {
+			newLine = line[:startPos.Col]
+		}
+
+		// Handle different completion types
+		if m.completionState.Trigger == '@' {
+			// For @ completions, just insert @filename for user editing
+			newLine += "@" + text
+		} else {
+			// For slash commands, just insert the text
+			newLine += text
+		}
+
+		if endPos.Col < len(line) {
+			newLine += line[endPos.Col:]
+		}
+
+		m.content[startPos.Row] = newLine
+
+		// Update cursor position
+		var insertedLength int
+		if m.completionState.Trigger == '@' {
+			insertedLength = len(text) + 1 // +1 for @
+		} else {
+			insertedLength = len(text)
+		}
+		newCursorCol := startPos.Col + insertedLength
+		m.cursor = Position{Row: startPos.Row, Col: newCursorCol}
+	}
+
+	return m
+}
+
+func (m Model) checkAndTriggerCompletion() Model {
+	// If completion is already active, just update it
+	if m.completionState.Active {
+		return m.updateCompletion()
+	}
+
+	// Check if cursor is positioned after a trigger character
+	if m.cursor.Row >= len(m.content) || m.cursor.Col == 0 {
+		return m
+	}
+
+	line := m.content[m.cursor.Row]
+	if m.cursor.Col > len(line) {
+		return m
+	}
+
+	// Look backwards from cursor to find potential trigger
+	for i := m.cursor.Col - 1; i >= 0; i-- {
+		char := rune(line[i])
+		
+		// Check for @ trigger
+		if char == '@' {
+			// Check if it's not escaped
+			if i == 0 || line[i-1] != '\\' {
+				// Found valid @ trigger, check if we have a partial query
+				query := line[i:m.cursor.Col]
+				if len(query) > 0 { // Only trigger if there's at least the @ character
+					m = m.triggerCompletion('@')
+					return m
+				}
+			}
+			break // Stop searching after finding @
+		}
+		
+		// Check for / trigger at start of line
+		if char == '/' && i == 0 {
+			query := line[i:m.cursor.Col]
+			if len(query) > 0 { // Only trigger if there's at least the / character
+				m = m.triggerCompletion('/')
+				return m
+			}
+			break
+		}
+		
+		// Stop searching if we hit whitespace or certain punctuation
+		if char == ' ' || char == '\t' || char == '\n' || char == ',' || char == ';' || char == '.' || char == '!' || char == '?' {
+			break
+		}
+	}
+
+	return m
 }

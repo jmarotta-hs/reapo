@@ -1,44 +1,50 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"reapo/internal/logger"
-	"reapo/internal/tools"
 )
+
+// ToolUseInfo represents a tool use request from Claude
+type ToolUseInfo struct {
+	ID    string
+	Name  string
+	Input json.RawMessage
+}
+
+// ToolDefinition represents a tool that can be called by agents
+type ToolDefinition struct {
+	Name        string                         `json:"name"`
+	Description string                         `json:"description"`
+	InputSchema anthropic.ToolInputSchemaParam `json:"input_schema"`
+	Function    func(input json.RawMessage) (string, error)
+}
+
+// RunTaskInput represents the input for running a task
+type RunTaskInput struct {
+	Task    string `json:"task" jsonschema:"description=The task to execute"`
+	Context string `json:"context" jsonschema:"description=Additional context for the task"`
+}
+
+// ToolCallback represents a callback function for tool lifecycle events
+type ToolCallback func(event string, toolName, toolID, data string)
 
 // Agent represents an AI agent that can interact with tools
 type Agent struct {
-	client         *anthropic.Client
-	getUserMessage func() (string, bool)
-	tools          []tools.ToolDefinition
-	systemPrompt   string
+	client       *anthropic.Client
+	tools        []ToolDefinition
+	systemPrompt string
+	toolCallback ToolCallback
 }
 
-// NewAgent creates a new interactive agent
-func NewAgent(
-	client *anthropic.Client,
-	getUserMessage func() (string, bool),
-	toolDefs []tools.ToolDefinition,
-	systemPrompt string,
-) *Agent {
-	return &Agent{
-		client:         client,
-		getUserMessage: getUserMessage,
-		tools:          toolDefs,
-		systemPrompt:   systemPrompt,
-	}
-}
-
-// NewTaskAgent creates a new task-specific agent
-func NewTaskAgent(client *anthropic.Client, toolDefs []tools.ToolDefinition, systemPrompt string) *Agent {
+// NewAgent creates a new agent
+func NewAgent(client *anthropic.Client, getUserMessage func() (string, bool), toolDefs []ToolDefinition, systemPrompt string) *Agent {
 	return &Agent{
 		client:       client,
 		tools:        toolDefs,
@@ -46,195 +52,35 @@ func NewTaskAgent(client *anthropic.Client, toolDefs []tools.ToolDefinition, sys
 	}
 }
 
-// Run starts the interactive agent loop
-func (a *Agent) Run(ctx context.Context) error {
-	if a.getUserMessage == nil {
-		return fmt.Errorf("getUserMessage function required for interactive mode")
-	}
-
-	conversation := []anthropic.MessageParam{}
-	log.Println("Chat with Claude (use 'ctrl-c' to quit)")
-
-	readUserInput := true
-	for {
-		if readUserInput {
-			log.Print("\u001b[94mYou\u001b[0m: ")
-			userInput, ok := a.getUserMessage()
-			if !ok {
-				break
-			}
-
-			userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
-			conversation = append(conversation, userMessage)
-		}
-
-		message, err := a.runInference(ctx, conversation)
-		if err != nil {
-			return err
-		}
-		conversation = append(conversation, message.ToParam())
-
-		toolUses := []toolUseInfo{}
-		for _, content := range message.Content {
-			switch content.Type {
-			case "text":
-				log.Printf("\u001b[93mClaude\u001b[0m: %s\n", content.Text)
-			case "tool_use":
-				toolUses = append(toolUses, toolUseInfo{
-					id:    content.ID,
-					name:  content.Name,
-					input: content.Input,
-				})
-			}
-		}
-
-		toolResults := a.executeToolsConcurrently(toolUses)
-
-		if len(toolResults) == 0 {
-			readUserInput = true
-			continue
-		}
-		readUserInput = false
-		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
-	}
-
-	return nil
+// SetToolCallback sets the callback function for tool lifecycle events
+func (a *Agent) SetToolCallback(callback ToolCallback) {
+	a.toolCallback = callback
 }
 
-// RunNonInteractive executes a single input message and runs the conversation loop without interactive prompts
-func (a *Agent) RunNonInteractive(ctx context.Context, input string) error {
+// GenerateText runs inference and returns the text response
+func (a *Agent) GenerateText(ctx context.Context, message string) (string, error) {
 	conversation := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(input)),
+		anthropic.NewUserMessage(anthropic.NewTextBlock(message)),
 	}
 
-	for {
-		message, err := a.runInference(ctx, conversation)
-		if err != nil {
-			return err
-		}
-		conversation = append(conversation, message.ToParam())
-
-		toolUses := []toolUseInfo{}
-		hasToolUse := false
-
-		for _, content := range message.Content {
-			switch content.Type {
-			case "text":
-				log.Print(content.Text)
-			case "tool_use":
-				hasToolUse = true
-				toolUses = append(toolUses, toolUseInfo{
-					id:    content.ID,
-					name:  content.Name,
-					input: content.Input,
-				})
-			}
-		}
-
-		if !hasToolUse {
-			break
-		}
-
-		toolResults := a.executeToolsConcurrently(toolUses)
-		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
+	response, err := a.RunInference(ctx, conversation)
+	if err != nil {
+		return "", err
 	}
 
-	return nil
-}
-
-// RunSingleMessage executes a single input message and returns the response text
-func (a *Agent) RunSingleMessage(ctx context.Context, input string) (string, error) {
-	conversation := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(input)),
-	}
-
+	// Extract text content from response
 	var responseText strings.Builder
-
-	for {
-		message, err := a.runInference(ctx, conversation)
-		if err != nil {
-			return "", err
+	for _, content := range response.Content {
+		if content.Type == "text" {
+			responseText.WriteString(content.Text)
 		}
-		conversation = append(conversation, message.ToParam())
-
-		toolUses := []toolUseInfo{}
-		hasToolUse := false
-
-		for _, content := range message.Content {
-			switch content.Type {
-			case "text":
-				responseText.WriteString(content.Text)
-			case "tool_use":
-				hasToolUse = true
-				toolUses = append(toolUses, toolUseInfo{
-					id:    content.ID,
-					name:  content.Name,
-					input: content.Input,
-				})
-			}
-		}
-
-		if !hasToolUse {
-			break
-		}
-
-		toolResults := a.executeToolsConcurrently(toolUses)
-		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
 	}
 
 	return responseText.String(), nil
 }
 
-// RunTask executes a single task and returns the result
-func (a *Agent) RunTask(ctx context.Context, task, context string) (string, error) {
-	conversation := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(fmt.Sprintf("Task: %s\n\nContext: %s", task, context))),
-	}
-
-	maxRounds := 5
-	var finalResponse string
-
-	for round := range maxRounds {
-		message, err := a.runInference(ctx, conversation)
-		if err != nil {
-			return "", fmt.Errorf("task execution failed at round %d: %w", round+1, err)
-		}
-
-		conversation = append(conversation, message.ToParam())
-
-		toolUses := []toolUseInfo{}
-		hasToolUse := false
-
-		for _, content := range message.Content {
-			switch content.Type {
-			case "text":
-				finalResponse = content.Text
-			case "tool_use":
-				hasToolUse = true
-				toolUses = append(toolUses, toolUseInfo{
-					id:    content.ID,
-					name:  content.Name,
-					input: content.Input,
-				})
-			}
-		}
-
-		if !hasToolUse {
-			break
-		}
-
-		toolResults := a.executeToolsConcurrently(toolUses)
-		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
-	}
-
-	if finalResponse == "" {
-		return "", fmt.Errorf("no final response received")
-	}
-
-	return finalResponse, nil
-}
-
-func (a *Agent) runInference(ctx context.Context, conversation []anthropic.MessageParam) (*anthropic.Message, error) {
+// RunInference executes inference with Claude API
+func (a *Agent) RunInference(ctx context.Context, conversation []anthropic.MessageParam) (*anthropic.Message, error) {
 	anthropicTools := []anthropic.ToolUnionParam{}
 	for _, tool := range a.tools {
 		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{
@@ -246,6 +92,62 @@ func (a *Agent) runInference(ctx context.Context, conversation []anthropic.Messa
 		})
 	}
 
+	// Log all messages with their content and tool information
+	messages := make([]map[string]interface{}, 0)
+	for i, msg := range conversation {
+		messageInfo := map[string]interface{}{
+			"index": i,
+			"role":  msg.Role,
+		}
+		
+		// Extract different types of content
+		var textContent []string
+		var toolUses []map[string]interface{}
+		var toolResults []map[string]interface{}
+		
+		for _, content := range msg.Content {
+			if text := content.GetText(); text != nil {
+				textContent = append(textContent, *text)
+			}
+			
+			// Check for tool use blocks
+			if content.OfToolUse != nil {
+				toolUses = append(toolUses, map[string]interface{}{
+					"id":   content.OfToolUse.ID,
+					"name": content.OfToolUse.Name,
+					"input": content.OfToolUse.Input,
+				})
+			}
+			
+			// Check for tool result blocks  
+			if content.OfToolResult != nil {
+				toolResults = append(toolResults, map[string]interface{}{
+					"tool_use_id": content.OfToolResult.ToolUseID,
+					"content":     content.OfToolResult.Content,
+					"is_error":    content.OfToolResult.IsError,
+				})
+			}
+		}
+		
+		if len(textContent) > 0 {
+			messageInfo["text"] = textContent
+		}
+		if len(toolUses) > 0 {
+			messageInfo["tool_uses"] = toolUses
+		}
+		if len(toolResults) > 0 {
+			messageInfo["tool_results"] = toolResults
+		}
+		
+		messages = append(messages, messageInfo)
+	}
+	
+	logger.Chat("REQUEST", map[string]interface{}{
+		"model":    "claude-4-sonnet-20250514",
+		"messages": messages,
+		"toolCount": len(anthropicTools),
+	})
+
 	message, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaude4Sonnet20250514,
 		MaxTokens: int64(1024),
@@ -253,43 +155,45 @@ func (a *Agent) runInference(ctx context.Context, conversation []anthropic.Messa
 		Tools:     anthropicTools,
 		System:    []anthropic.TextBlockParam{{Type: "text", Text: a.systemPrompt}},
 	})
+
+	// Log the chat response
+	if err != nil {
+		logger.Chat("ERROR", map[string]interface{}{
+			"error": err.Error(),
+		})
+		logger.Error("API request failed: %v", err)
+	} else {
+		logger.Chat("RESPONSE", message)
+	}
+
 	return message, err
 }
 
-type toolUseInfo struct {
-	id    string
-	name  string
-	input json.RawMessage
-}
-
-type toolExecutionResult struct {
-	index  int
-	result anthropic.ContentBlockParamUnion
-	err    error
-}
-
-func (a *Agent) executeToolsConcurrently(toolUses []toolUseInfo) []anthropic.ContentBlockParamUnion {
+// ExecuteToolsConcurrently runs multiple tools in parallel
+func (a *Agent) ExecuteToolsConcurrently(toolUses []ToolUseInfo) []anthropic.ContentBlockParamUnion {
 	if len(toolUses) == 0 {
 		return nil
 	}
 
 	results := make([]anthropic.ContentBlockParamUnion, len(toolUses))
-	resultChan := make(chan toolExecutionResult, len(toolUses))
+	resultChan := make(chan struct {
+		index  int
+		result anthropic.ContentBlockParamUnion
+	}, len(toolUses))
 
 	// Kick off all tools concurrently
 	for i, toolUse := range toolUses {
-		go func(index int, tu toolUseInfo) {
-			result := a.executeTool(tu.id, tu.name, tu.input)
-			resultChan <- toolExecutionResult{
-				index:  index,
-				result: result,
-				err:    nil,
-			}
+		go func(index int, tu ToolUseInfo) {
+			result := a.ExecuteTool(tu.ID, tu.Name, tu.Input)
+			resultChan <- struct {
+				index  int
+				result anthropic.ContentBlockParamUnion
+			}{index, result}
 		}(i, toolUse)
 	}
 
 	// Collect all results
-	for i := 0; i < len(toolUses); i++ {
+	for range toolUses {
 		execResult := <-resultChan
 		results[execResult.index] = execResult.result
 	}
@@ -297,8 +201,9 @@ func (a *Agent) executeToolsConcurrently(toolUses []toolUseInfo) []anthropic.Con
 	return results
 }
 
-func (a *Agent) executeTool(id, name string, input json.RawMessage) anthropic.ContentBlockParamUnion {
-	var toolDef tools.ToolDefinition
+// ExecuteTool executes a single tool
+func (a *Agent) ExecuteTool(id, name string, input json.RawMessage) anthropic.ContentBlockParamUnion {
+	var toolDef ToolDefinition
 	var found bool
 	for _, tool := range a.tools {
 		if tool.Name == name {
@@ -308,27 +213,37 @@ func (a *Agent) executeTool(id, name string, input json.RawMessage) anthropic.Co
 		}
 	}
 	if !found {
+		if a.toolCallback != nil {
+			a.toolCallback("error", name, id, "tool not found")
+		}
 		return anthropic.NewToolResultBlock(id, "tool not found", true)
+	}
+
+	// Notify UI that tool is starting
+	if a.toolCallback != nil {
+		a.toolCallback("start", name, id, string(input))
 	}
 
 	// Log tool execution to file instead of stdout to avoid TUI corruption
 	logger.Tool(name, string(input))
 
+	startTime := time.Now()
 	response, err := toolDef.Function(input)
+	duration := time.Since(startTime)
+
+	// Notify UI of completion
+	if a.toolCallback != nil {
+		if err != nil {
+			a.toolCallback("error", name, id, err.Error())
+		} else {
+			resultData := fmt.Sprintf(`{"output": %q, "duration": %q}`, response, duration.String())
+			a.toolCallback("complete", name, id, resultData)
+		}
+	}
+
 	if err != nil {
 		return anthropic.NewToolResultBlock(id, err.Error(), true)
 	}
 
 	return anthropic.NewToolResultBlock(id, response, false)
-}
-
-// GetUserInputFromStdin creates a getUserMessage function that reads from stdin
-func GetUserInputFromStdin() func() (string, bool) {
-	scanner := bufio.NewScanner(os.Stdin)
-	return func() (string, bool) {
-		if !scanner.Scan() {
-			return "", false
-		}
-		return scanner.Text(), true
-	}
 }

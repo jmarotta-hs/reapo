@@ -1,5 +1,7 @@
 package vimtextarea
 
+import "reapo/internal/tui/completion"
+
 type Mode int
 
 const (
@@ -73,4 +75,9 @@ type Model struct {
 
 	// Undo system
 	undoHistory UndoHistory
+
+	// Completion system
+	completionState    completion.CompletionState
+	completionEngine   *completion.CompletionEngine
+	completionStartPos Position // Track where completion started for insertion
 }

@@ -1,8 +1,8 @@
 package vimtextarea
 
 import (
-	"strings"
 	"github.com/charmbracelet/lipgloss"
+	"strings"
 )
 
 func (m Model) View() string {

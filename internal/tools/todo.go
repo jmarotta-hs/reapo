@@ -47,7 +47,7 @@ type TodoReadInput struct {
 func TodoRead(input json.RawMessage) (string, error) {
 	todosMutex.RLock()
 	defer todosMutex.RUnlock()
-	
+
 	if len(todos) == 0 {
 		return "No todos found", nil
 	}
@@ -109,7 +109,7 @@ func addTodo(text string) (string, error) {
 	todosMutex.Lock()
 	todos = append(todos, newTodo)
 	todosMutex.Unlock()
-	
+
 	return fmt.Sprintf("Added todo: %s (ID: %s)", newTodo.Text, newTodo.ID), nil
 }
 
@@ -120,7 +120,7 @@ func completeTodo(id string) (string, error) {
 
 	todosMutex.Lock()
 	defer todosMutex.Unlock()
-	
+
 	for i, todo := range todos {
 		if todo.ID == id {
 			if todo.Completed {

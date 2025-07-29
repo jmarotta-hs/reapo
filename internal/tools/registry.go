@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"reapo/internal/agent"
 )
 
 // Tool represents a tool that can be used by the agent
@@ -15,13 +16,8 @@ type Tool interface {
 	Execute(input json.RawMessage) (string, error)
 }
 
-// ToolDefinition wraps a tool function with metadata for the anthropic API
-type ToolDefinition struct {
-	Name        string                         `json:"name"`
-	Description string                         `json:"description"`
-	InputSchema anthropic.ToolInputSchemaParam `json:"input_schema"`
-	Function    func(input json.RawMessage) (string, error)
-}
+// ToolDefinition is an alias for agent.ToolDefinition
+type ToolDefinition = agent.ToolDefinition
 
 // Registry manages available tools
 type Registry struct {

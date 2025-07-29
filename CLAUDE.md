@@ -39,53 +39,66 @@ go test -race ./...
 
 ## Architecture
 
-This is a Go-based AI agent CLI tool that integrates with Anthropic's Claude API. The architecture consists of:
+This is a Go-based AI agent CLI tool that integrates with Anthropic's Claude API. The project has been successfully refactored from a monolithic design into a clean modular architecture.
 
-**Current Structure** (single-file implementation):
-- `src/main.go` - Main application with all components (~1000+ lines)
-- Embedded system prompts in `src/system_prompt.txt` and `src/system_prompt_tasks.txt`
-- Basic tool system with file operations, todo management, and task execution
+**Current Structure**:
+```
+reapo/
+├── cmd/reapo/
+│   ├── main.go              # CLI entry point and initialization
+│   └── system_prompt.txt    # Main system prompt (embedded)
+├── internal/
+│   ├── agent/               # Agent logic and conversation management
+│   │   └── agent.go         # Core agent functionality
+│   ├── tools/               # Tool implementations and registry
+│   │   ├── registry.go      # Tool interface and management
+│   │   ├── file.go          # File operation tools
+│   │   ├── todo.go          # In-memory todo management
+│   │   └── task.go          # Sub-agent task spawning
+│   ├── schema/              
+│   │   └── generator.go     # JSON schema generation utilities
+│   ├── logger/
+│   │   └── logger.go        # Structured logging system
+│   └── tui/                 # Terminal UI components
+│       ├── model.go         # Bubble Tea model
+│       ├── components/      # UI components (chat, input, vim textarea)
+│       └── completion/      # Completion engine with filesystem support
+```
 
 **Core Components**:
-- **Agent System**: Interactive and task-specific agents using Claude API
-- **Tool Registry**: Built-in tools for file operations, todo management, and task running
-- **Concurrent Tool Execution**: Tools run in parallel for improved performance
-- **JSON Schema Generation**: Dynamic schema creation for tool parameters
+- **Agent System**: Interactive and task-specific agents using Claude Sonnet 4 API
+- **Tool Registry**: Modular tool system with concurrent execution support
+- **TUI Interface**: Bubble Tea-based terminal interface with Vim-style text editing
+- **Completion System**: Fuzzy completion for commands and filesystem navigation
+- **Schema Generation**: Dynamic JSON schema creation for tool parameters
 
-**Key Tools Available**:
-- `read_file` - Read file contents
-- `list_files` - Directory listings with recursive walk
+**Available Tools**:
+- `read_file` - Read file contents with optional line ranges
+- `list_files` - Directory listings with recursive traversal
 - `edit_file` - String replacement-based file editing
-- `todoread`/`todowrite` - In-memory todo management
-- `run_task` - Spawn sub-agents for complex tasks
+- `todoread`/`todowrite` - In-memory todo list management
+- `run_task` - Spawn sub-agents for complex tasks with dedicated context
 
-**Data Flow**:
-1. User input → Agent conversation loop
-2. Claude API call with tool definitions
-3. Concurrent tool execution for multiple tool calls
-4. Results fed back to conversation context
-5. Continues until no more tool calls needed
-
-## Refactoring Plans
-
-The project has documented plans to reorganize from the current monolithic structure into:
-- `cmd/` - CLI entry points
-- `internal/agent/` - Agent logic and conversation management  
-- `internal/tools/` - Tool implementations and registry
-- `internal/models/` - Data structures
-- `pkg/schema/` - Reusable schema generation
+**TUI Features**:
+- Vim-style text editing with modal support
+- Real-time chat interface with syntax highlighting
+- Fuzzy completion for commands and file paths
+- Progress indicators and request status tracking
+- Conversation history management
 
 ## Dependencies
 
 - `github.com/anthropics/anthropic-sdk-go` - Claude API client
 - `github.com/invopop/jsonschema` - JSON schema generation
-- `github.com/mattn/go-sqlite3` - SQLite database (planned for persistence)
+- `github.com/charmbracelet/bubbletea` - Terminal UI framework
+- `github.com/charmbracelet/bubbles` - UI components
+- `github.com/mattn/go-sqlite3` - SQLite database support
 
 ## Development Notes
 
-- All code currently resides in `src/main.go` - refer to this file for implementations
-- System prompts are embedded via `//go:embed` directives
+- System prompts are embedded via `//go:embed` directives in `cmd/reapo/main.go`
 - Uses Claude Sonnet 4 model specifically
 - Tool execution is designed to be concurrent and stateless
-- No external configuration files currently used
-- In-memory todo system (no persistence yet)
+- Logging is handled through `internal/logger` with structured output to `logs/`
+- In-memory todo system with no persistence currently
+- TUI supports both interactive mode and non-interactive `run` command
