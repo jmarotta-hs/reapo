@@ -99,27 +99,27 @@ func (a *Agent) RunInference(ctx context.Context, conversation []anthropic.Messa
 			"index": i,
 			"role":  msg.Role,
 		}
-		
+
 		// Extract different types of content
 		var textContent []string
 		var toolUses []map[string]interface{}
 		var toolResults []map[string]interface{}
-		
+
 		for _, content := range msg.Content {
 			if text := content.GetText(); text != nil {
 				textContent = append(textContent, *text)
 			}
-			
+
 			// Check for tool use blocks
 			if content.OfToolUse != nil {
 				toolUses = append(toolUses, map[string]interface{}{
-					"id":   content.OfToolUse.ID,
-					"name": content.OfToolUse.Name,
+					"id":    content.OfToolUse.ID,
+					"name":  content.OfToolUse.Name,
 					"input": content.OfToolUse.Input,
 				})
 			}
-			
-			// Check for tool result blocks  
+
+			// Check for tool result blocks
 			if content.OfToolResult != nil {
 				toolResults = append(toolResults, map[string]interface{}{
 					"tool_use_id": content.OfToolResult.ToolUseID,
@@ -128,7 +128,7 @@ func (a *Agent) RunInference(ctx context.Context, conversation []anthropic.Messa
 				})
 			}
 		}
-		
+
 		if len(textContent) > 0 {
 			messageInfo["text"] = textContent
 		}
@@ -138,13 +138,13 @@ func (a *Agent) RunInference(ctx context.Context, conversation []anthropic.Messa
 		if len(toolResults) > 0 {
 			messageInfo["tool_results"] = toolResults
 		}
-		
+
 		messages = append(messages, messageInfo)
 	}
-	
+
 	logger.Chat("REQUEST", map[string]interface{}{
-		"model":    "claude-4-sonnet-20250514",
-		"messages": messages,
+		"model":     "claude-4-sonnet-20250514",
+		"messages":  messages,
 		"toolCount": len(anthropicTools),
 	})
 

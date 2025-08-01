@@ -63,17 +63,17 @@ type Message struct {
 func ShouldShowToolOutput(toolName string) bool {
 	// Tools that should show output
 	outputTools := map[string]bool{
-		"edit_file":   true,
-		"write_file":  true,
-		"todoread":    true,
-		"todowrite":   true,
-		"run_task":    true,
-		"list_files":  true,
+		"edit_file":  true,
+		"write_file": true,
+		"todoread":   true,
+		"todowrite":  true,
+		"run_task":   true,
+		"list_files": true,
 	}
-	
+
 	// Tools that should only show invocation (no output)
 	// read_file, and others not listed above
-	
+
 	return outputTools[toolName]
 }
 
@@ -101,11 +101,11 @@ func (c *ChatComponent) Render() string {
 // RenderWithSpinners renders chat messages with spinner support
 func (c *ChatComponent) RenderWithSpinners(spinners map[string]*SpinnerComponent) string {
 	// Styles for bullet points only
-	userBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))      // Blue
-	assistantBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // Yellow
-	errorBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))     // Red
+	userBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))       // Blue
+	assistantBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // Yellow
+	errorBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))      // Red
 	processingBulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")) // Cyan
-	
+
 	// Text style matches input text (default terminal color)
 	textStyle := lipgloss.NewStyle() // No color specified, uses default
 
@@ -114,7 +114,7 @@ func (c *ChatComponent) RenderWithSpinners(spinners map[string]*SpinnerComponent
 	for i, msg := range c.messages {
 		content := c.renderMessage(msg, spinners, userBulletStyle, assistantBulletStyle, errorBulletStyle, processingBulletStyle, textStyle)
 		chatLines = append(chatLines, content)
-		
+
 		// Add empty line between messages (except after the last message)
 		if i < len(c.messages)-1 {
 			chatLines = append(chatLines, "")
@@ -148,25 +148,25 @@ func wrapText(text string, width int, prefixLen int) string {
 	if width <= prefixLen {
 		return text // Can't wrap meaningfully
 	}
-	
+
 	availableWidth := width - prefixLen
 	if availableWidth <= 0 {
 		return text
 	}
-	
+
 	lines := strings.Split(text, "\n")
 	var wrappedLines []string
-	
+
 	for _, line := range lines {
 		if len(line) <= availableWidth {
 			wrappedLines = append(wrappedLines, line)
 			continue
 		}
-		
+
 		// Wrap this line
 		var currentLine strings.Builder
 		var currentLen int
-		
+
 		words := strings.Fields(line)
 		for i, word := range words {
 			wordLen := len(word)
@@ -174,7 +174,7 @@ func wrapText(text string, width int, prefixLen int) string {
 			if i > 0 {
 				spaceLen = 1 // for the space
 			}
-			
+
 			// Check if adding this word would exceed the width
 			if currentLen+spaceLen+wordLen > availableWidth && currentLen > 0 {
 				// Start a new line
@@ -183,24 +183,24 @@ func wrapText(text string, width int, prefixLen int) string {
 				currentLen = 0
 				spaceLen = 0
 			}
-			
+
 			// Add space if not the first word on the line
 			if currentLen > 0 {
 				currentLine.WriteString(" ")
 				currentLen += 1
 			}
-			
+
 			// Add the word
 			currentLine.WriteString(word)
 			currentLen += wordLen
 		}
-		
+
 		// Add any remaining content
 		if currentLine.Len() > 0 {
 			wrappedLines = append(wrappedLines, currentLine.String())
 		}
 	}
-	
+
 	return strings.Join(wrappedLines, "\n")
 }
 
@@ -210,7 +210,7 @@ func (c *ChatComponent) renderMessage(msg Message, spinners map[string]*SpinnerC
 	if msg.Type == MessageTypeToolInvocation || msg.Type == MessageTypeToolResult {
 		return c.renderToolMessage(msg, spinners, textStyle)
 	}
-	
+
 	// Default to text message if Type is empty (backward compatibility)
 	if msg.Type == "" {
 		msg.Type = MessageTypeText
@@ -251,17 +251,17 @@ func (c *ChatComponent) renderMessage(msg Message, spinners map[string]*SpinnerC
 			// For processing messages with no content, show progress inline
 			content = msg.Progress.Description
 		}
-		
+
 		// Wrap text accounting for bullet + spinner + space
 		spinnerPrefix := prefix + spinners[msg.ID].RenderInline() + " "
 		wrappedContent := wrapText(content, c.width, len(spinnerPrefix))
-		
+
 		// Handle multi-line content with proper indentation
 		lines := strings.Split(wrappedContent, "\n")
 		if len(lines) <= 1 {
 			return bulletStyle.Render(prefix) + spinners[msg.ID].RenderInline() + " " + textStyle.Render(wrappedContent)
 		}
-		
+
 		// First line gets bullet + spinner
 		result := bulletStyle.Render(prefix) + spinners[msg.ID].RenderInline() + " " + textStyle.Render(lines[0])
 		// Subsequent lines get indentation
@@ -276,16 +276,16 @@ func (c *ChatComponent) renderMessage(msg Message, spinners map[string]*SpinnerC
 		if msg.Progress != nil && msg.Status != MessageProcessing {
 			content += fmt.Sprintf("\n   %s", msg.Progress.Description)
 		}
-		
+
 		// Wrap text accounting for bullet
 		wrappedContent := wrapText(content, c.width, len(prefix))
-		
+
 		// Handle multi-line content with proper indentation
 		lines := strings.Split(wrappedContent, "\n")
 		if len(lines) <= 1 {
 			return bulletStyle.Render(prefix) + textStyle.Render(wrappedContent)
 		}
-		
+
 		// First line gets bullet
 		result := bulletStyle.Render(prefix) + textStyle.Render(lines[0])
 		// Subsequent lines get indentation
@@ -317,7 +317,7 @@ func (c *ChatComponent) renderToolMessage(msg Message, spinners map[string]*Spin
 			if msg.Status == MessageProcessing {
 				bulletStyle = toolProcessingStyle
 				content = fmt.Sprintf("Running tool: %s", msg.ToolInfo.Name)
-				
+
 				// Show input if available (truncated)
 				if msg.ToolInfo.Input != "" && msg.ToolInfo.Input != "{}" {
 					inputPreview := msg.ToolInfo.Input
@@ -344,7 +344,7 @@ func (c *ChatComponent) renderToolMessage(msg Message, spinners map[string]*Spin
 			if msg.ToolInfo != nil && msg.ToolInfo.Duration != "" {
 				content += fmt.Sprintf(" (%s)", msg.ToolInfo.Duration)
 			}
-			
+
 			// Show truncated output if available and tool should show output
 			if msg.ToolInfo != nil && msg.ToolInfo.Output != "" && msg.ToolInfo.ShowOutput {
 				outputPreview := msg.ToolInfo.Output
@@ -361,13 +361,13 @@ func (c *ChatComponent) renderToolMessage(msg Message, spinners map[string]*Spin
 		// Wrap text accounting for prefix + spinner + space
 		spinnerPrefix := prefix + spinners[msg.ID].RenderInline() + " "
 		wrappedContent := wrapText(content, c.width, len(spinnerPrefix))
-		
+
 		// Handle multi-line content with proper indentation
 		lines := strings.Split(wrappedContent, "\n")
 		if len(lines) <= 1 {
 			return bulletStyle.Render(prefix) + spinners[msg.ID].RenderInline() + " " + textStyle.Render(wrappedContent)
 		}
-		
+
 		// First line gets prefix + spinner
 		result := bulletStyle.Render(prefix) + spinners[msg.ID].RenderInline() + " " + textStyle.Render(lines[0])
 		// Subsequent lines get indentation
@@ -379,13 +379,13 @@ func (c *ChatComponent) renderToolMessage(msg Message, spinners map[string]*Spin
 	} else {
 		// Regular rendering without spinner
 		wrappedContent := wrapText(content, c.width, len(prefix))
-		
+
 		// Handle multi-line content with proper indentation
 		lines := strings.Split(wrappedContent, "\n")
 		if len(lines) <= 1 {
 			return bulletStyle.Render(prefix) + textStyle.Render(wrappedContent)
 		}
-		
+
 		// First line gets prefix
 		result := bulletStyle.Render(prefix) + textStyle.Render(lines[0])
 		// Subsequent lines get indentation

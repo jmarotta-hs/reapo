@@ -1,10 +1,11 @@
-- Add slash commands
+- Anthropic login
 
 - Add tools for parity with opencode
 
 - Anthropic prompt caching
 
-- Anthropic login
+- refactor out slash commands "/" and file/dir references "@"
+- refactor update.go
 
 - mark todo as in progress
 
@@ -19,14 +20,22 @@
    - Yes for all
    - No, and specify what to do
 
-- persist requests
-
+- persist sessions
 - add conversation history to tui model to keep track of conversations
   - building for now. Probably need a session model
 
+- plan and build modes
+  - planning tool
+
+- everything above a certain line should be static
+
+- summary prompt should be with agent
+
 - Fix startup time
 
-- Add :q and :quit and :q!
+- Add :q and :quit
+
+- Only exit with :q or :quit
 
 - markdown rendering
 

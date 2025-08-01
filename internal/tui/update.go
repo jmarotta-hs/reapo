@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +17,9 @@ import (
 	"reapo/internal/tui/components"
 	"reapo/internal/tui/components/vimtextarea"
 )
+
+//go:embed summary_prompt.txt
+var summaryPrompt string
 
 // Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -34,6 +39,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.String() == "ctrl+c":
 			return m, tea.Quit
+		case msg.String() == "esc" && m.helpModal.IsVisible():
+			// Hide help modal on Esc
+			m.helpModal.Hide()
+			return m, nil
 		case msg.String() == "enter" && m.textarea.Mode() == vimtextarea.Normal:
 			// Don't send message if completion is active
 			if m.textarea.CompletionState().Active {
@@ -81,7 +90,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		
+
 		// If no message exists, this is the final agent response - add it
 		if !messageExists && msg.Content != "" {
 			agentMsg := components.Message{
@@ -96,14 +105,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.messages = append(m.messages, agentMsg)
 		}
-		
+
 		// Clean up processing state when complete
 		if msg.Status == components.MessageCompleted || msg.Status == components.MessageError {
 			m.processing = false
 			m.processingText = ""
 			m.processingSpinner = nil
 		}
-		
+
 		return m, nil
 
 	case ToolInvocationMsg:
@@ -179,7 +188,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			spinner.Tick()
 			hasProcessing = true
 		}
-		
+
 		// Also update processing spinner if active
 		if m.processing && m.processingSpinner != nil {
 			m.processingSpinner.Tick()
@@ -212,6 +221,106 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ProcessToolsMsg:
 		// Handle tool processing by returning the batch command
 		return m, m.processToolUse(msg.Conversation, msg.Response, msg.AgentMessageID)
+
+	case vimtextarea.SlashCommandMsg:
+		// Handle slash commands
+		switch msg.Command {
+		case "/help":
+			// Show help modal
+			m.helpModal.Show()
+			return m, nil
+		case "/clear":
+			// Clear conversation history
+			m.messages = []components.Message{}
+			m.tokenCount = 0
+			return m, nil
+		case "/editor":
+			// Open external editor
+			return m, m.openExternalEditor()
+		case "/compact":
+			// Compact conversation history
+			m.processing = true
+			m.processingText = "Compacting conversation..."
+			m.processingSpinner = components.NewSpinnerComponent("")
+			return m, tea.Batch(
+				m.startAnimation(),
+				m.compactConversation(),
+			)
+		}
+
+	case EditorFinishedMsg:
+		// Handle external editor result
+		if msg.Error != nil {
+			// Show error message
+			m.messages = append(m.messages, components.Message{
+				ID:        generateMessageID(),
+				Role:      "system",
+				Content:   fmt.Sprintf("Error opening editor: %s", msg.Error.Error()),
+				Type:      components.MessageTypeText,
+				Status:    components.MessageError,
+				IsError:   true,
+				Timestamp: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+		}
+		// Don't modify textarea - editor was just for convenience
+		return m, nil
+
+	case CompactConversationMsg:
+		if msg.Error != nil {
+			// Show error message
+			m.messages = append(m.messages, components.Message{
+				ID:        generateMessageID(),
+				Role:      "system",
+				Content:   fmt.Sprintf("Error compacting conversation: %s", msg.Error.Error()),
+				Type:      components.MessageTypeText,
+				Status:    components.MessageError,
+				IsError:   true,
+				Timestamp: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+			m.processing = false
+			m.processingText = ""
+			m.processingSpinner = nil
+			return m, nil
+		}
+
+		// Clear conversation history
+		m.messages = []components.Message{}
+
+		// Add summary as first user message
+		summaryMsg := components.Message{
+			ID:        generateMessageID(),
+			Role:      "user",
+			Content:   msg.Summary,
+			Type:      components.MessageTypeText,
+			Status:    components.MessageCompleted,
+			Timestamp: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.messages = append(m.messages, summaryMsg)
+
+		// Add system message about compaction
+		systemMsg := components.Message{
+			ID:        generateMessageID(),
+			Role:      "system",
+			Content:   "Previous conversation was compacted.",
+			Type:      components.MessageTypeText,
+			Status:    components.MessageCompleted,
+			Timestamp: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.messages = append(m.messages, systemMsg)
+
+		// Reset token count
+		m.tokenCount = len(msg.Summary) // Simple approximation
+
+		// Clear processing state
+		m.processing = false
+		m.processingText = ""
+		m.processingSpinner = nil
+
+		return m, nil
 
 	}
 
@@ -274,14 +383,14 @@ func (m Model) processAgentRequestWithID(originalMessage string, agentMessageID 
 			}
 		}
 	}
-	
+
 	// If we have file reference commands, batch them with the main processing
 	if len(fileRefCmds) > 0 {
 		cmds := fileRefCmds
 		cmds = append(cmds, m.processAgentRequestCore(originalMessage, agentMessageID, fileRefMessages))
 		return tea.Batch(cmds...)
 	}
-	
+
 	// No file references, just do the main processing
 	return m.processAgentRequestCore(originalMessage, agentMessageID, fileRefMessages)
 }
@@ -337,8 +446,8 @@ func (m Model) processAgentRequestCore(originalMessage string, agentMessageID st
 					// Process tools and create messages
 					// We need to return a message that will trigger the batch command
 					return ProcessToolsMsg{
-						Conversation: conversation,
-						Response: response,
+						Conversation:   conversation,
+						Response:       response,
 						AgentMessageID: agentMessageID,
 					}
 				}
@@ -366,13 +475,13 @@ func (m Model) processAgentRequestCore(originalMessage string, agentMessageID st
 func (m Model) processToolUse(conversation []anthropic.MessageParam, response *anthropic.Message, agentMessageID string) tea.Cmd {
 	// Extract tool information
 	toolUses := extractToolUses(response)
-	
+
 	// Add assistant's response with tool use to conversation
 	conversation = append(conversation, response.ToParam())
-	
+
 	// Create batch of commands
 	var cmds []tea.Cmd
-	
+
 	// First, send all tool start messages immediately
 	for _, toolUse := range toolUses {
 		startMsg := components.Message{
@@ -384,7 +493,7 @@ func (m Model) processToolUse(conversation []anthropic.MessageParam, response *a
 			Timestamp: time.Now(),
 			UpdatedAt: time.Now(),
 		}
-		
+
 		// Create command that sends this message immediately
 		cmd := func(msg components.Message) tea.Cmd {
 			return func() tea.Msg {
@@ -393,11 +502,11 @@ func (m Model) processToolUse(conversation []anthropic.MessageParam, response *a
 		}(startMsg)
 		cmds = append(cmds, cmd)
 	}
-	
+
 	// Then execute tools and update the agent message with the response
 	executeCmd := m.executeToolsAndRespond(conversation, toolUses, agentMessageID)
 	cmds = append(cmds, executeCmd)
-	
+
 	// Return batch that sends messages immediately then executes tools
 	return tea.Batch(cmds...)
 }
@@ -410,9 +519,9 @@ func (m Model) executeToolsAndRespond(conversation []anthropic.MessageParam, too
 			index  int
 			result anthropic.ContentBlockParamUnion
 		}
-		
+
 		resultChan := make(chan toolResult, len(toolUses))
-		
+
 		// Launch concurrent tool executions
 		for i, toolUse := range toolUses {
 			go func(index int, tu agent.ToolUseInfo) {
@@ -423,21 +532,21 @@ func (m Model) executeToolsAndRespond(conversation []anthropic.MessageParam, too
 				}
 			}(i, toolUse)
 		}
-		
+
 		// Collect results in order
 		toolResults := make([]anthropic.ContentBlockParamUnion, len(toolUses))
 		for i := 0; i < len(toolUses); i++ {
 			res := <-resultChan
 			toolResults[res.index] = res.result
 		}
-		
+
 		// Add tool results to conversation
 		conversation = append(conversation, anthropic.NewUserMessage(toolResults...))
-		
+
 		// Create context with timeout for follow-up response
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		
+
 		// Get follow-up response after tool execution
 		followUpResponse, err := m.agent.RunInference(ctx, conversation)
 		if err != nil {
@@ -456,19 +565,19 @@ func (m Model) executeToolsAndRespond(conversation []anthropic.MessageParam, too
 				Progress:  nil,
 			}
 		}
-		
+
 		// Check if follow-up response has more tool uses
 		for _, content := range followUpResponse.Content {
 			if content.Type == "tool_use" {
 				// Return a message that will trigger more tool processing
 				return ProcessToolsMsg{
-					Conversation: conversation,
-					Response: followUpResponse,
+					Conversation:   conversation,
+					Response:       followUpResponse,
 					AgentMessageID: agentMessageID,
 				}
 			}
 		}
-		
+
 		// Extract text from follow-up response
 		var responseText strings.Builder
 		for _, content := range followUpResponse.Content {
@@ -476,7 +585,7 @@ func (m Model) executeToolsAndRespond(conversation []anthropic.MessageParam, too
 				responseText.WriteString(content.Text)
 			}
 		}
-		
+
 		// Update the agent message with the final response
 		return MessageUpdateMsg{
 			MessageID: agentMessageID,
@@ -570,7 +679,7 @@ func (m Model) executeFileReferences(text string) ([]anthropic.MessageParam, []t
 			toolInput := map[string]string{"path": ref}
 			toolUseBlocks = append(toolUseBlocks, anthropic.NewToolUseBlock(toolID, toolInput, "read_file"))
 			toolResultBlocks = append(toolResultBlocks, anthropic.NewToolResultBlock(toolID, errorMsg, true))
-			
+
 			// Create command to show error message
 			cmd := func(ref string, err error) tea.Cmd {
 				return func() tea.Msg {
@@ -821,4 +930,94 @@ func formatToolArguments(toolName string, input json.RawMessage) string {
 		return string(input)
 	}
 	return "..."
+}
+
+// openExternalEditor opens the user's preferred editor for quick access
+func (m Model) openExternalEditor() tea.Cmd {
+	return func() tea.Msg {
+		// Get the editor from environment variable
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vim" // Default to vim if no EDITOR is set
+		}
+
+		// Just open the editor - no files, no stdin, no stdout
+		c := exec.Command(editor)
+
+		// Use tea.ExecProcess to run the external command
+		return tea.ExecProcess(c, func(err error) tea.Msg {
+			if err != nil {
+				return EditorFinishedMsg{
+					Content: "",
+					Error:   fmt.Errorf("failed to run editor: %w", err),
+				}
+			}
+			return EditorFinishedMsg{
+				Content: "",
+				Error:   nil,
+			}
+		})()
+	}
+}
+
+// EditorFinishedMsg is sent when the external editor is closed
+type EditorFinishedMsg struct {
+	Content string
+	Error   error
+}
+
+// compactConversation summarizes the current conversation and clears history
+func (m Model) compactConversation() tea.Cmd {
+	return func() tea.Msg {
+		// Build conversation history for summarization
+		conversation := m.buildConversationHistory()
+
+		// If no conversation to compact, return early
+		if len(conversation) == 0 {
+			return CompactConversationMsg{
+				Summary: "",
+				Error:   fmt.Errorf("no conversation to compact"),
+			}
+		}
+
+		// Build a new conversation for summarization
+		summaryConversation := []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(summaryPrompt)),
+		}
+
+		// Add the entire conversation as context
+		for _, msg := range conversation {
+			summaryConversation = append(summaryConversation, msg)
+		}
+
+		// Add final instruction to summarize
+		summaryConversation = append(summaryConversation,
+			anthropic.NewUserMessage(anthropic.NewTextBlock("Please summarize this conversation.")))
+
+		// Create context with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Run inference to get summary
+		response, err := m.agent.RunInference(ctx, summaryConversation)
+		if err != nil {
+			return CompactConversationMsg{
+				Summary: "",
+				Error:   fmt.Errorf("failed to generate summary: %w", err),
+			}
+		}
+
+		// Extract text content from response
+		var summary strings.Builder
+		for _, content := range response.Content {
+			if content.Type == "text" {
+				summary.WriteString(content.Text)
+			}
+		}
+
+		return CompactConversationMsg{
+			Summary: summary.String(),
+			Error:   nil,
+		}
+	}
 }

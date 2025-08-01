@@ -17,21 +17,22 @@ import (
 
 // Model represents the Bubble Tea model for the TUI
 type Model struct {
-	messages       []components.Message
-	textarea       vimtextarea.Model
-	viewport       struct {
+	messages []components.Message
+	textarea vimtextarea.Model
+	viewport struct {
 		width  int
 		height int
 	}
-	agent            *agent.Agent
-	client           anthropic.Client
-	toolDefs         []tools.ToolDefinition
-	ready            bool
-	processing       bool
-	processingText   string // Text to show during processing
+	agent             *agent.Agent
+	client            anthropic.Client
+	toolDefs          []tools.ToolDefinition
+	ready             bool
+	processing        bool
+	processingText    string // Text to show during processing
 	processingSpinner *components.SpinnerComponent
-	tokenCount       int
-	spinners         map[string]*components.SpinnerComponent // Track spinners by message ID
+	tokenCount        int
+	spinners          map[string]*components.SpinnerComponent // Track spinners by message ID
+	helpModal         *components.HelpModal                   // Help modal
 }
 
 // AgentResponseMsg represents a message from the agent
@@ -47,29 +48,29 @@ type AddMessageMsg struct {
 
 // MessageUpdateMsg represents updating an existing message
 type MessageUpdateMsg struct {
-	MessageID   string
-	Content     string
-	Status      components.MessageStatus
-	Progress    *components.Progress
-	ToolInfo    *components.ToolInfo
+	MessageID string
+	Content   string
+	Status    components.MessageStatus
+	Progress  *components.Progress
+	ToolInfo  *components.ToolInfo
 }
 
 // ToolInvocationMsg represents a tool being invoked
 type ToolInvocationMsg struct {
-	ToolName     string
-	ToolID       string
-	Input        string
-	MessageID    string
+	ToolName  string
+	ToolID    string
+	Input     string
+	MessageID string
 }
 
 // ToolResultMsg represents a tool execution result
 type ToolResultMsg struct {
-	ToolName     string
-	ToolID       string
-	Output       string
-	Error        string
-	Duration     string
-	MessageID    string
+	ToolName  string
+	ToolID    string
+	Output    string
+	Error     string
+	Duration  string
+	MessageID string
 }
 
 // AnimationTickMsg represents a tick for spinner animations
@@ -93,6 +94,26 @@ type ProcessToolsMsg struct {
 	Conversation   []anthropic.MessageParam
 	Response       *anthropic.Message
 	AgentMessageID string
+}
+
+// SlashCommandMsg represents a slash command to be executed
+type SlashCommandMsg struct {
+	Command string
+}
+
+// ShowHelpModalMsg triggers showing the help modal
+type ShowHelpModalMsg struct{}
+
+// ClearConversationMsg triggers clearing the conversation
+type ClearConversationMsg struct{}
+
+// OpenExternalEditorMsg triggers opening the external editor
+type OpenExternalEditorMsg struct{}
+
+// CompactConversationMsg triggers conversation compaction with the summary result
+type CompactConversationMsg struct {
+	Summary string
+	Error   error
 }
 
 // systemPromptContent will be set by the runner
@@ -119,12 +140,13 @@ func NewModel(client anthropic.Client, toolDefs []tools.ToolDefinition) Model {
 	chatAgent := agent.NewAgent(&client, nil, toolDefs, systemPromptContent)
 
 	model := Model{
-		messages: []components.Message{},
-		textarea: ta,
-		agent:    chatAgent,
-		client:   client,
-		toolDefs: toolDefs,
-		spinners: make(map[string]*components.SpinnerComponent),
+		messages:  []components.Message{},
+		textarea:  ta,
+		agent:     chatAgent,
+		client:    client,
+		toolDefs:  toolDefs,
+		spinners:  make(map[string]*components.SpinnerComponent),
+		helpModal: components.NewHelpModal(),
 	}
 
 	return model
@@ -144,5 +166,3 @@ func generateMessageID() string {
 	}
 	return id.String()
 }
-
-

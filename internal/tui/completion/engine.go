@@ -8,6 +8,7 @@ var slashCommands = []CompletionItem{
 	{Text: "/help", Description: "Show all available commands"},
 	{Text: "/clear", Description: "Clear conversation context"},
 	{Text: "/editor", Description: "Open external editor ($EDITOR)"},
+	{Text: "/compact", Description: "Summarize and compact conversation"},
 }
 
 type CompletionEngine struct {

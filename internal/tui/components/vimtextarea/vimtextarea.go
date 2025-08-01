@@ -7,6 +7,11 @@ import (
 	"reapo/internal/tui/completion"
 )
 
+// SlashCommandMsg represents a slash command to be executed
+type SlashCommandMsg struct {
+	Command string
+}
+
 func New() Model {
 	initialContent := []string{""}
 	m := Model{
@@ -258,8 +263,22 @@ func (m Model) handleInsertMode(key string, msg tea.KeyMsg) (Model, tea.Cmd) {
 		case "ctrl+y", "enter":
 			// Insert selected completion
 			if selected := m.completionState.GetSelectedItem(); selected != nil {
-				m = m.insertCompletion(selected.Text)
-				m.completionState.Reset()
+				// Check if it's a slash command
+				if strings.HasPrefix(selected.Text, "/") {
+					// Clear textarea and execute command
+					m.content = []string{""}
+					m.cursor = Position{0, 0}
+					m.completionState.Reset()
+
+					// Return command to execute
+					return m, func() tea.Msg {
+						return SlashCommandMsg{Command: selected.Text}
+					}
+				} else {
+					// Regular completion - insert as before
+					m = m.insertCompletion(selected.Text)
+					m.completionState.Reset()
+				}
 			}
 			return m, nil
 		case "backspace":
@@ -752,7 +771,7 @@ func (m Model) checkAndTriggerCompletion() Model {
 	// Look backwards from cursor to find potential trigger
 	for i := m.cursor.Col - 1; i >= 0; i-- {
 		char := rune(line[i])
-		
+
 		// Check for @ trigger
 		if char == '@' {
 			// Check if it's not escaped
@@ -766,7 +785,7 @@ func (m Model) checkAndTriggerCompletion() Model {
 			}
 			break // Stop searching after finding @
 		}
-		
+
 		// Check for / trigger at start of line
 		if char == '/' && i == 0 {
 			query := line[i:m.cursor.Col]
@@ -776,7 +795,7 @@ func (m Model) checkAndTriggerCompletion() Model {
 			}
 			break
 		}
-		
+
 		// Stop searching if we hit whitespace or certain punctuation
 		if char == ' ' || char == '\t' || char == '\n' || char == ',' || char == ';' || char == '.' || char == '!' || char == '?' {
 			break

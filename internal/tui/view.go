@@ -42,7 +42,7 @@ func (m Model) View() string {
 	// Render processing indicator if active
 	var processingIndicator string
 	if m.processing && m.processingSpinner != nil {
-		processingIndicator = "\n" + m.processingSpinner.View() + " " + m.processingText + "\n"
+		processingIndicator = "\n  " + m.processingSpinner.View() + " " + m.processingText + "\n"
 	}
 
 	// Render completion above input if active
@@ -56,6 +56,11 @@ func (m Model) View() string {
 
 	footerComponent := components.NewFooterComponent(m.textarea.Mode(), m.viewport.width)
 	footer := footerComponent.Render()
+
+	// Render help modal if visible (overlay on top)
+	if m.helpModal.IsVisible() {
+		return m.helpModal.View()
+	}
 
 	return chat + processingIndicator + completion + input + "\n\n\n" + footer
 }
