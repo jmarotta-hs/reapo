@@ -61,6 +61,16 @@ func (m Model) View() string {
 	if m.helpModal.IsVisible() {
 		return m.helpModal.View()
 	}
+	
+	// Render status modal if visible (overlay on top)
+	if m.statusModal.IsVisible() {
+		return m.statusModal.View()
+	}
+	
+	// Render auth modal if active (overlay on top)
+	if m.authModal.Active() {
+		return m.authModal.View()
+	}
 
 	return chat + processingIndicator + completion + input + "\n\n\n" + footer
 }

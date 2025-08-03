@@ -1,13 +1,27 @@
+
+- add toast component to TUI
+- show user has been logged out
+- what to do if user is logged in
+- show user has been logged in when successful
+
 - Anthropic login
+
+- Auto compaction
 
 - Add tools for parity with opencode
 
 - Anthropic prompt caching
 
+- Cerebras / OpenAPI provider
+
 - refactor out slash commands "/" and file/dir references "@"
 - refactor update.go
 
 - mark todo as in progress
+
+- cancel API calls
+
+- Add toast component
 
 - Drill down to individual files with chat on left and file on right
 
@@ -19,6 +33,8 @@
    - Yes
    - Yes for all
    - No, and specify what to do
+
+- cannot write to file before read
 
 - persist sessions
 - add conversation history to tui model to keep track of conversations
@@ -35,7 +51,7 @@
 
 - Add :q and :quit
 
-- Only exit with :q or :quit
+- Ctrl-c does not exit on first attempt
 
 - markdown rendering
 

@@ -92,7 +92,7 @@ reapo/
 - `github.com/invopop/jsonschema` - JSON schema generation
 - `github.com/charmbracelet/bubbletea` - Terminal UI framework
 - `github.com/charmbracelet/bubbles` - UI components
-- `github.com/mattn/go-sqlite3` - SQLite database support
+- `github.com/pkg/browser` - Browser launching for OAuth flows
 
 ## Development Notes
 

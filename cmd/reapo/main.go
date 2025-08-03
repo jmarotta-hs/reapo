@@ -12,6 +12,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"reapo/internal/agent"
+	"reapo/internal/auth"
 	"reapo/internal/logger"
 	"reapo/internal/tools"
 	"reapo/internal/tui"
@@ -28,7 +29,14 @@ func main() {
 	defer logger.Close()
 	logger.Debug("Starting reapo...")
 
-	client := anthropic.NewClient()
+	// Create authenticated client
+	client, err := auth.NewClient()
+	if err != nil {
+		// Log warning but continue - some commands like /login should work without auth
+		logger.Debug("No authentication available: %v", err)
+		// Create a default client that might work with env vars
+		client = anthropic.NewClient()
+	}
 
 	// Initialize task agent with client and system prompt
 	tools.InitializeTaskAgent(&client, systemPromptContent)

@@ -33,6 +33,10 @@ type Model struct {
 	tokenCount        int
 	spinners          map[string]*components.SpinnerComponent // Track spinners by message ID
 	helpModal         *components.HelpModal                   // Help modal
+	statusModal       *components.StatusModal                 // Status modal
+	// Auth state
+	authVerifier      string // OAuth verifier for code exchange
+	authModal         components.AuthModal
 }
 
 // AgentResponseMsg represents a message from the agent
@@ -104,6 +108,9 @@ type SlashCommandMsg struct {
 // ShowHelpModalMsg triggers showing the help modal
 type ShowHelpModalMsg struct{}
 
+// ShowStatusModalMsg triggers showing the status modal
+type ShowStatusModalMsg struct{}
+
 // ClearConversationMsg triggers clearing the conversation
 type ClearConversationMsg struct{}
 
@@ -140,13 +147,15 @@ func NewModel(client anthropic.Client, toolDefs []tools.ToolDefinition) Model {
 	chatAgent := agent.NewAgent(&client, nil, toolDefs, systemPromptContent)
 
 	model := Model{
-		messages:  []components.Message{},
-		textarea:  ta,
-		agent:     chatAgent,
-		client:    client,
-		toolDefs:  toolDefs,
-		spinners:  make(map[string]*components.SpinnerComponent),
-		helpModal: components.NewHelpModal(),
+		messages:    []components.Message{},
+		textarea:    ta,
+		agent:       chatAgent,
+		client:      client,
+		toolDefs:    toolDefs,
+		spinners:    make(map[string]*components.SpinnerComponent),
+		helpModal:   components.NewHelpModal(),
+		statusModal: components.NewStatusModal(),
+		authModal:   components.NewAuthModal(),
 	}
 
 	return model

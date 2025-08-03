@@ -6,9 +6,12 @@ import (
 
 var slashCommands = []CompletionItem{
 	{Text: "/help", Description: "Show all available commands"},
+	{Text: "/status", Description: "Show authentication status"},
 	{Text: "/clear", Description: "Clear conversation context"},
 	{Text: "/editor", Description: "Open external editor ($EDITOR)"},
 	{Text: "/compact", Description: "Summarize and compact conversation"},
+	{Text: "/login", Description: "Login to Claude (Max plan or API key)"},
+	{Text: "/logout", Description: "Logout from Claude"},
 }
 
 type CompletionEngine struct {

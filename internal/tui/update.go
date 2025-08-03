@@ -14,6 +14,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	tea "github.com/charmbracelet/bubbletea"
 	"reapo/internal/agent"
+	"reapo/internal/auth"
+	"reapo/internal/logger"
 	"reapo/internal/tui/components"
 	"reapo/internal/tui/components/vimtextarea"
 )
@@ -26,15 +28,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
 
+	// Handle auth modal updates first
+	if m.authModal.Active() {
+		m.authModal, cmd = m.authModal.Update(msg)
+		if cmd != nil {
+			return m, cmd
+		}
+		// If modal is still active, don't process other messages
+		if m.authModal.Active() {
+			return m, nil
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.viewport.width = msg.Width
 		m.viewport.height = msg.Height
 		m.textarea.SetWidth(msg.Width - 6) // Account for border padding + prefix
 		m.ready = true
-		return m, nil
+		// Update auth modal size
+		m.authModal, cmd = m.authModal.Update(msg)
+		// Update status modal size
+		if m.statusModal != nil {
+			statusModal, _ := m.statusModal.Update(msg)
+			m.statusModal = &statusModal
+		}
+		return m, cmd
 
 	case tea.KeyMsg:
+		// Handle status modal key events first
+		if m.statusModal.IsVisible() {
+			statusModal, cmd := m.statusModal.Update(msg)
+			m.statusModal = &statusModal
+			return m, cmd
+		}
+		
 		// Handle key events before passing to textarea
 		switch {
 		case msg.String() == "ctrl+c":
@@ -53,6 +81,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.textarea.Value() != "" && !m.processing {
 				userMessage := m.textarea.Value()
 				m.textarea.SetValue("")
+				
 				m.processing = true
 				return m, m.processMessage(userMessage)
 			}
@@ -62,6 +91,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.textarea.Value() != "" && !m.processing {
 				userMessage := m.textarea.Value()
 				m.textarea.SetValue("")
+				
 				m.processing = true
 				return m, m.processMessage(userMessage)
 			}
@@ -229,6 +259,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Show help modal
 			m.helpModal.Show()
 			return m, nil
+		case "/status":
+			// Show status modal
+			authStatus := auth.GetAuthStatus()
+			m.statusModal.Show(authStatus, m.viewport.width, m.viewport.height)
+			return m, nil
 		case "/clear":
 			// Clear conversation history
 			m.messages = []components.Message{}
@@ -246,6 +281,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.startAnimation(),
 				m.compactConversation(),
 			)
+		case "/login":
+			// Start login flow
+			return m, m.startLoginFlow()
+		case "/logout":
+			// Logout immediately
+			return m, m.startLogoutFlow()
 		}
 
 	case EditorFinishedMsg:
@@ -321,7 +362,108 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.processingSpinner = nil
 
 		return m, nil
-
+		
+	case SetProcessingMsg:
+		// Update processing state
+		m.processing = msg.Active
+		m.processingText = msg.Text
+		if msg.Active {
+			m.processingSpinner = components.NewSpinnerComponent("")
+			return m, m.startAnimation()
+		} else {
+			m.processingSpinner = nil
+		}
+		return m, nil
+		
+	case StoreVerifierAndShowModalMsg:
+		// Store the verifier first
+		m.authVerifier = msg.Verifier
+		
+		// Then show the auth modal
+		var message string
+		if msg.BrowserOpened {
+			message = "Browser opened. Please authenticate and copy the authorization code."
+		} else {
+			message = "Could not open browser. Please visit the URL below and copy the authorization code."
+		}
+		
+		cmd := m.authModal.Show(components.AuthModalConfig{
+			Title:    "Claude Max Authentication",
+			Message:  message,
+			URL:      msg.URL,
+			Width:    m.viewport.width,
+			Height:   m.viewport.height,
+			OnSubmit: func(code string) tea.Cmd {
+				return m.handleAuthCode(code, m.authVerifier)
+			},
+			OnCancel: func() tea.Cmd {
+				return func() tea.Msg {
+					return AuthFlowCompleteMsg{
+						Success: false,
+						Message: "Authentication cancelled",
+					}
+				}
+			},
+		})
+		return m, cmd
+		
+	case ShowAuthModalMsg:
+		// Show the auth modal
+		var message string
+		if msg.BrowserOpened {
+			message = "Browser opened. Please authenticate and copy the authorization code."
+		} else {
+			message = "Could not open browser. Please visit the URL below and copy the authorization code."
+		}
+		
+		cmd := m.authModal.Show(components.AuthModalConfig{
+			Title:    "Claude Max Authentication",
+			Message:  message,
+			URL:      msg.URL,
+			Width:    m.viewport.width,
+			Height:   m.viewport.height,
+			OnSubmit: func(code string) tea.Cmd {
+				return m.handleAuthCode(code, m.authVerifier)
+			},
+			OnCancel: func() tea.Cmd {
+				return func() tea.Msg {
+					return AuthFlowCompleteMsg{
+						Success: false,
+						Message: "Authentication cancelled",
+					}
+				}
+			},
+		})
+		return m, cmd
+		
+	case AuthFlowCompleteMsg:
+		// Handle auth flow completion
+		m.authVerifier = ""
+		m.authModal.Hide()
+		
+		if msg.Success {
+			// Reinitialize client
+			newClient, err := auth.NewClient()
+			if err != nil {
+				logger.Debug("Failed to reinitialize client: %v", err)
+			} else {
+				m.client = newClient
+				m.agent = agent.NewAgent(&m.client, nil, m.toolDefs, systemPromptContent)
+			}
+			m.processingText = msg.Message
+			// Clear processing after a delay
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return SetProcessingMsg{Active: false}
+			})
+		} else {
+			// Show error
+			m.processingText = msg.Message
+			m.processing = false
+			m.processingSpinner = nil
+			return m, nil
+		}
+		
+	
 	}
 
 	m.textarea, cmd = m.textarea.Update(msg)
@@ -1021,3 +1163,4 @@ func (m Model) compactConversation() tea.Cmd {
 		}
 	}
 }
+
