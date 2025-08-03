@@ -34,6 +34,7 @@ type Model struct {
 	spinners          map[string]*components.SpinnerComponent // Track spinners by message ID
 	helpModal         *components.HelpModal                   // Help modal
 	statusModal       *components.StatusModal                 // Status modal
+	statusline        *components.StatuslineComponent         // Statusline for messages
 	// Auth state
 	authVerifier      string // OAuth verifier for code exchange
 	authModal         components.AuthModal
@@ -123,6 +124,16 @@ type CompactConversationMsg struct {
 	Error   error
 }
 
+// ShowStatuslineMsg displays a message in the statusline
+type ShowStatuslineMsg struct {
+	Type     components.StatuslineMessageType
+	Text     string
+	Duration time.Duration
+}
+
+// ClearStatuslineMsg clears the statusline message
+type ClearStatuslineMsg struct{}
+
 // systemPromptContent will be set by the runner
 var systemPromptContent string
 
@@ -155,6 +166,7 @@ func NewModel(client anthropic.Client, toolDefs []tools.ToolDefinition) Model {
 		spinners:    make(map[string]*components.SpinnerComponent),
 		helpModal:   components.NewHelpModal(),
 		statusModal: components.NewStatusModal(),
+		statusline:  components.NewStatuslineComponent(0), // Width will be set on WindowSizeMsg
 		authModal:   components.NewAuthModal(),
 	}
 

@@ -46,6 +46,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.height = msg.Height
 		m.textarea.SetWidth(msg.Width - 6) // Account for border padding + prefix
 		m.ready = true
+		// Update statusline width
+		if m.statusline != nil {
+			m.statusline.SetWidth(msg.Width)
+		}
 		// Update auth modal size
 		m.authModal, cmd = m.authModal.Update(msg)
 		// Update status modal size
@@ -283,10 +287,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		case "/login":
 			// Start login flow
-			return m, m.startLoginFlow()
+			cmds = append(cmds, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineInfo,
+					Text:     "Starting authentication flow...",
+					Duration: 0, // Will be replaced by next message
+				}
+			})
+			cmds = append(cmds, m.startLoginFlow())
+			return m, tea.Batch(cmds...)
 		case "/logout":
-			// Logout immediately
-			return m, m.startLogoutFlow()
+			// Start logout flow
+			cmds = append(cmds, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineInfo,
+					Text:     "Logging out...",
+					Duration: 0, // Will be replaced by next message
+				}
+			})
+			cmds = append(cmds, m.startLogoutFlow())
+			return m, tea.Batch(cmds...)
 		}
 
 	case EditorFinishedMsg:
@@ -379,6 +399,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Store the verifier first
 		m.authVerifier = msg.Verifier
 		
+		// Show statusline message about browser
+		if msg.BrowserOpened {
+			cmds = append(cmds, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineInfo,
+					Text:     "Waiting for authorization code...",
+					Duration: 0, // Will be replaced when auth completes
+				}
+			})
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineWarning,
+					Text:     "Warning: Could not open browser automatically",
+					Duration: 0, // Will be replaced when auth completes
+				}
+			})
+		}
+		
 		// Then show the auth modal
 		var message string
 		if msg.BrowserOpened {
@@ -398,14 +437,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			},
 			OnCancel: func() tea.Cmd {
 				return func() tea.Msg {
-					return AuthFlowCompleteMsg{
-						Success: false,
-						Message: "Authentication cancelled",
+					return ShowStatuslineMsg{
+						Type:     components.StatuslineInfo,
+						Text:     "Authentication cancelled",
+						Duration: 3 * time.Second,
 					}
 				}
 			},
 		})
-		return m, cmd
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
 		
 	case ShowAuthModalMsg:
 		// Show the auth modal
@@ -450,19 +491,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.client = newClient
 				m.agent = agent.NewAgent(&m.client, nil, m.toolDefs, systemPromptContent)
 			}
-			m.processingText = msg.Message
-			// Clear processing after a delay
-			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-				return SetProcessingMsg{Active: false}
-			})
+			// Show success in statusline
+			return m, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineInfo,
+					Text:     msg.Message,
+					Duration: 4 * time.Second,
+				}
+			}
 		} else {
-			// Show error
-			m.processingText = msg.Message
-			m.processing = false
-			m.processingSpinner = nil
+			// Already handled by the calling function
 			return m, nil
 		}
 		
+	case ShowStatuslineMsg:
+		if m.statusline != nil {
+			message := &components.StatuslineMessage{
+				Type:     msg.Type,
+				Text:     msg.Text,
+				Duration: msg.Duration,
+				ShowTime: time.Now(),
+			}
+			m.statusline.SetMessage(message)
+			// If duration > 0, set up a timer to clear the message
+			if msg.Duration > 0 {
+				return m, tea.Tick(msg.Duration, func(t time.Time) tea.Msg {
+					return ClearStatuslineMsg{}
+				})
+			}
+		}
+		return m, nil
+
+	case ClearStatuslineMsg:
+		if m.statusline != nil {
+			// Only clear if the message has expired
+			if m.statusline.HasExpired() {
+				m.statusline.ClearMessage()
+			}
+		}
+		return m, nil
 	
 	}
 

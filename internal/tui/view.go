@@ -31,9 +31,9 @@ func (m Model) View() string {
 		processingHeight = 2 // 1 line for content + 1 for spacing
 	}
 
-	// Calculate heights: total - textarea height - completion height - processing height - border (2 lines) - footer line - spacing
+	// Calculate heights: total - textarea height - completion height - processing height - border (2 lines) - footer line - statusline - spacing
 	textareaHeight := m.textarea.Height()
-	chatHeight := m.viewport.height - textareaHeight - completionHeight - processingHeight - 4
+	chatHeight := m.viewport.height - textareaHeight - completionHeight - processingHeight - 5
 
 	// Create and render components
 	chatComponent := components.NewChatComponent(m.messages, chatHeight, m.viewport.width)
@@ -56,6 +56,12 @@ func (m Model) View() string {
 
 	footerComponent := components.NewFooterComponent(m.textarea.Mode(), m.viewport.width)
 	footer := footerComponent.Render()
+	
+	// Render statusline
+	statusline := ""
+	if m.statusline != nil {
+		statusline = m.statusline.Render()
+	}
 
 	// Render help modal if visible (overlay on top)
 	if m.helpModal.IsVisible() {
@@ -72,5 +78,5 @@ func (m Model) View() string {
 		return m.authModal.View()
 	}
 
-	return chat + processingIndicator + completion + input + "\n\n\n" + footer
+	return chat + processingIndicator + completion + input + "\n\n\n" + footer + "\n" + statusline
 }

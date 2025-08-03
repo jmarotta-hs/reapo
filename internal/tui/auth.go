@@ -2,11 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pkg/browser"
 	"reapo/internal/auth"
 	"reapo/internal/logger"
+	"reapo/internal/tui/components"
 )
 
 // Auth flow message types
@@ -29,9 +32,10 @@ func (m Model) startLoginFlow() tea.Cmd {
 	authResult, err := auth.Authorize()
 	if err != nil {
 		return func() tea.Msg {
-			return SetProcessingMsg{
-				Text:   fmt.Sprintf("Failed to generate auth URL: %v", err),
-				Active: true,
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineError,
+				Text:     fmt.Sprintf("Error: Failed to generate auth URL: %v", err),
+				Duration: 6 * time.Second,
 			}
 		}
 	}
@@ -57,9 +61,10 @@ func (m Model) startLogoutFlow() tea.Cmd {
 	authInfo, err := auth.All()
 	if err != nil || len(authInfo) == 0 {
 		return func() tea.Msg {
-			return AuthFlowCompleteMsg{
-				Success: false,
-				Message: "No authentication configured.",
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineWarning,
+				Text:     "Warning: No authentication configured",
+				Duration: 4 * time.Second,
 			}
 		}
 	}
@@ -71,9 +76,10 @@ func (m Model) startLogoutFlow() tea.Cmd {
 	if err := auth.Remove("anthropic"); err != nil {
 		logger.Error("Failed to logout", "error", err)
 		return func() tea.Msg {
-			return AuthFlowCompleteMsg{
-				Success: false,
-				Message: fmt.Sprintf("Failed to logout: %v", err),
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineError,
+				Text:     fmt.Sprintf("Error: Failed to logout: %v", err),
+				Duration: 6 * time.Second,
 			}
 		}
 	}
@@ -83,18 +89,19 @@ func (m Model) startLogoutFlow() tea.Cmd {
 	return func() tea.Msg {
 		return AuthFlowCompleteMsg{
 			Success: true,
-			Message: "Successfully logged out.",
+			Message: "Successfully logged out",
 		}
 	}
 }
 
 func (m Model) handleAuthCode(code string, verifier string) tea.Cmd {
-	// Update processing text
+	// Show exchanging message immediately
 	cmds := []tea.Cmd{
 		func() tea.Msg {
-			return SetProcessingMsg{
-				Text:   "Exchanging authorization code...",
-				Active: true,
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineInfo,
+				Text:     "Exchanging authorization code...",
+				Duration: 0, // No duration - will be replaced by next message
 			}
 		},
 	}
@@ -109,9 +116,26 @@ func (m Model) handleAuthCode(code string, verifier string) tea.Cmd {
 		oauthInfo, err := auth.Exchange(code, verifier)
 		if err != nil {
 			logger.Error("OAuth exchange failed", "error", err)
-			return AuthFlowCompleteMsg{
-				Success: false,
-				Message: fmt.Sprintf("Failed to exchange code: %v", err),
+			// Parse specific error types
+			errorMsg := "Error: Authentication failed"
+			if len(code) == 0 {
+				errorMsg = "Error: Authentication cancelled by user"
+			} else if err.Error() == "token exchange failed with status 400" {
+				errorMsg = "Error: Authentication failed: Invalid authorization code"
+			} else if err.Error() == "token exchange failed with status 401" {
+				errorMsg = "Error: Authentication failed: Authorization expired"
+			} else if err.Error() == "token exchange failed with status 403" {
+				errorMsg = "Error: Authentication failed: Access denied"
+			} else if strings.Contains(err.Error(), "failed to exchange code") {
+				errorMsg = "Error: Authentication failed: Network error"
+			} else {
+				errorMsg = fmt.Sprintf("Error: Authentication failed: %v", err)
+			}
+			
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineError,
+				Text:     errorMsg,
+				Duration: 6 * time.Second,
 			}
 		}
 		
@@ -123,9 +147,10 @@ func (m Model) handleAuthCode(code string, verifier string) tea.Cmd {
 		// Save auth info
 		if err := auth.Set("anthropic", oauthInfo); err != nil {
 			logger.Error("Failed to save auth info", "error", err)
-			return AuthFlowCompleteMsg{
-				Success: false,
-				Message: fmt.Sprintf("Failed to save auth: %v", err),
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineError,
+				Text:     fmt.Sprintf("Error: Failed to save authentication: %v", err),
+				Duration: 6 * time.Second,
 			}
 		}
 		
@@ -133,7 +158,7 @@ func (m Model) handleAuthCode(code string, verifier string) tea.Cmd {
 		
 		return AuthFlowCompleteMsg{
 			Success: true,
-			Message: "Successfully logged in with Claude Max!",
+			Message: "Successfully authenticated with Claude Max",
 		}
 	})
 	

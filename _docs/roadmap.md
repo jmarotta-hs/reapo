@@ -1,12 +1,10 @@
+- slash commands only show when it's the first word. will not show completion if it's not the only thing in the input
 
-- add toast component to TUI
-- show user has been logged out
-- what to do if user is logged in
-- show user has been logged in when successful
-
-- Anthropic login
+- put text input in middle until there is more text
 
 - Auto compaction
+
+- add config to choose model
 
 - Add tools for parity with opencode
 

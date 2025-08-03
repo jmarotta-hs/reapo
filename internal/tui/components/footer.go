@@ -60,7 +60,7 @@ func (f *FooterComponent) Render() string {
 	mainFooterText := leftText + strings.Repeat(" ", leftSpacing) + centerText + strings.Repeat(" ", rightSpacing) + rightText
 	mainFooter := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("245")).
-		Background(lipgloss.Color("0")).
+		Background(lipgloss.Color("236")).
 		Width(remainingWidth).
 		Padding(0, 1).
 		Render(mainFooterText)
