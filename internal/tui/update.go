@@ -108,6 +108,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Message.Status == components.MessageProcessing {
 			m.spinners[msg.Message.ID] = components.NewSpinnerComponent("")
 		}
+		// Update context tokens when adding completed messages
+		if msg.Message.Status == components.MessageCompleted {
+			m.contextTokens = m.countConversationTokens()
+		}
 		return m, nil
 
 	case MessageUpdateMsg:
@@ -145,6 +149,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processing = false
 			m.processingText = ""
 			m.processingSpinner = nil
+			// Update context tokens when message is complete
+			m.contextTokens = m.countConversationTokens()
 		}
 
 		return m, nil
@@ -204,6 +210,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			UpdatedAt: time.Now(),
 		}
 		m.messages = append(m.messages, userMsg)
+		
+		// Update context tokens after adding user message
+		m.contextTokens = m.countConversationTokens()
 
 		// Set processing state instead of adding a message
 		m.processing = true
@@ -249,7 +258,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.processing = false
 		m.processingText = ""
 		m.processingSpinner = nil
-		m.tokenCount += len(msg.Content) // Simple token approximation
+		// Update context tokens
+		m.contextTokens = m.countConversationTokens()
 		return m, nil
 
 	case ProcessToolsMsg:
@@ -271,7 +281,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/clear":
 			// Clear conversation history
 			m.messages = []components.Message{}
-			m.tokenCount = 0
+			m.contextTokens = 0
 			return m, nil
 		case "/editor":
 			// Open external editor
@@ -373,8 +383,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.messages = append(m.messages, systemMsg)
 
-		// Reset token count
-		m.tokenCount = len(msg.Summary) // Simple approximation
+		// Reset token count to just the summary
+		m.contextTokens = countTokens(systemPromptContent) + countTokens(msg.Summary)
 
 		// Clear processing state
 		m.processing = false
@@ -1229,5 +1239,38 @@ func (m Model) compactConversation() tea.Cmd {
 			Error:   nil,
 		}
 	}
+}
+
+// countTokens estimates the number of tokens in a string
+// Using the standard approximation of ~4 characters per token
+func countTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	// Standard approximation: 1 token ≈ 4 characters
+	return len(text) / 4
+}
+
+// countConversationTokens counts the total tokens in the conversation history
+func (m Model) countConversationTokens() int {
+	tokens := 0
+	
+	// Count system prompt tokens (from systemPromptContent)
+	tokens += countTokens(systemPromptContent)
+	
+	// Count message tokens
+	for _, msg := range m.messages {
+		if msg.Role == "user" || msg.Role == "assistant" {
+			tokens += countTokens(msg.Content)
+			
+			// Count tool invocation/result tokens
+			if msg.ToolInfo != nil {
+				tokens += countTokens(msg.ToolInfo.Input)
+				tokens += countTokens(msg.ToolInfo.Output)
+			}
+		}
+	}
+	
+	return tokens
 }
 

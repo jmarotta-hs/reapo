@@ -30,7 +30,9 @@ type Model struct {
 	processing        bool
 	processingText    string // Text to show during processing
 	processingSpinner *components.SpinnerComponent
-	tokenCount        int
+	contextTokens     int    // Current context window usage in tokens
+	maxContextTokens  int    // Maximum context window size (200k for both models)
+	currentModel      string // Current model being used
 	spinners          map[string]*components.SpinnerComponent // Track spinners by message ID
 	helpModal         *components.HelpModal                   // Help modal
 	statusModal       *components.StatusModal                 // Status modal
@@ -157,17 +159,23 @@ func NewModel(client anthropic.Client, toolDefs []tools.ToolDefinition) Model {
 
 	chatAgent := agent.NewAgent(&client, nil, toolDefs, systemPromptContent)
 
+	// Calculate initial token count from system prompt
+	initialTokens := len(systemPromptContent) / 4 // Standard approximation: 1 token ≈ 4 characters
+	
 	model := Model{
-		messages:    []components.Message{},
-		textarea:    ta,
-		agent:       chatAgent,
-		client:      client,
-		toolDefs:    toolDefs,
-		spinners:    make(map[string]*components.SpinnerComponent),
-		helpModal:   components.NewHelpModal(),
-		statusModal: components.NewStatusModal(),
-		statusline:  components.NewStatuslineComponent(0), // Width will be set on WindowSizeMsg
-		authModal:   components.NewAuthModal(),
+		messages:         []components.Message{},
+		textarea:         ta,
+		agent:            chatAgent,
+		client:           client,
+		toolDefs:         toolDefs,
+		contextTokens:    initialTokens,
+		maxContextTokens: 200000, // 200k tokens for both Sonnet 4 and Opus 4
+		currentModel:     "claude-sonnet-4",
+		spinners:         make(map[string]*components.SpinnerComponent),
+		helpModal:        components.NewHelpModal(),
+		statusModal:      components.NewStatusModal(),
+		statusline:       components.NewStatuslineComponent(0), // Width will be set on WindowSizeMsg
+		authModal:        components.NewAuthModal(),
 	}
 
 	return model

@@ -55,6 +55,7 @@ func (m Model) View() string {
 	input := inputComponent.Render()
 
 	footerComponent := components.NewFooterComponent(m.textarea.Mode(), m.viewport.width)
+	footerComponent.UpdateContextInfo(m.contextTokens, m.maxContextTokens, m.currentModel)
 	footer := footerComponent.Render()
 	
 	// Render statusline
