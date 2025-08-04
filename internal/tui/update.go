@@ -111,6 +111,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update context tokens when adding completed messages
 		if msg.Message.Status == components.MessageCompleted {
 			m.contextTokens = m.countConversationTokens()
+			
+			// Check if we need auto-compaction
+			if cmd := m.checkAutoCompaction(); cmd != nil {
+				return m, cmd
+			}
 		}
 		return m, nil
 
@@ -151,6 +156,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processingSpinner = nil
 			// Update context tokens when message is complete
 			m.contextTokens = m.countConversationTokens()
+			
+			// Check if we need auto-compaction
+			if cmd := m.checkAutoCompaction(); cmd != nil {
+				return m, cmd
+			}
 		}
 
 		return m, nil
@@ -213,6 +223,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		
 		// Update context tokens after adding user message
 		m.contextTokens = m.countConversationTokens()
+		
+		// Check if we need auto-compaction before processing
+		if cmd := m.checkAutoCompaction(); cmd != nil {
+			return m, cmd
+		}
 
 		// Set processing state instead of adding a message
 		m.processing = true
@@ -293,7 +308,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processingSpinner = components.NewSpinnerComponent("")
 			return m, tea.Batch(
 				m.startAnimation(),
-				m.compactConversation(),
+				m.compactConversation(false), // false = manual compaction
 			)
 		case "/login":
 			// Start login flow
@@ -339,11 +354,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CompactConversationMsg:
 		if msg.Error != nil {
-			// Show error message
+			// Show error message with appropriate prefix
+			errorPrefix := "Error compacting conversation"
+			if msg.IsAuto {
+				errorPrefix = "Error during auto-compaction"
+			}
 			m.messages = append(m.messages, components.Message{
 				ID:        generateMessageID(),
 				Role:      "system",
-				Content:   fmt.Sprintf("Error compacting conversation: %s", msg.Error.Error()),
+				Content:   fmt.Sprintf("%s: %s", errorPrefix, msg.Error.Error()),
 				Type:      components.MessageTypeText,
 				Status:    components.MessageError,
 				IsError:   true,
@@ -353,7 +372,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processing = false
 			m.processingText = ""
 			m.processingSpinner = nil
-			return m, nil
+			
+			// Show error in statusline too
+			return m, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineError,
+					Text:     fmt.Sprintf("%s: %s", errorPrefix, msg.Error.Error()),
+					Duration: 6 * time.Second,
+				}
+			}
 		}
 
 		// Clear conversation history
@@ -372,10 +399,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = append(m.messages, summaryMsg)
 
 		// Add system message about compaction
+		compactionMessage := "Previous conversation was compacted."
+		if msg.IsAuto {
+			compactionMessage = "Auto-compaction completed to save context."
+		}
 		systemMsg := components.Message{
 			ID:        generateMessageID(),
 			Role:      "system",
-			Content:   "Previous conversation was compacted.",
+			Content:   compactionMessage,
 			Type:      components.MessageTypeText,
 			Status:    components.MessageCompleted,
 			Timestamp: time.Now(),
@@ -391,6 +422,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.processingText = ""
 		m.processingSpinner = nil
 
+		// Show success statusline for auto-compaction
+		if msg.IsAuto {
+			percentage := float64(m.contextTokens) / float64(m.maxContextTokens) * 100
+			return m, func() tea.Msg {
+				return ShowStatuslineMsg{
+					Type:     components.StatuslineInfo,
+					Text:     fmt.Sprintf("Auto-compaction complete. Context reduced to %.1f%%", percentage),
+					Duration: 4 * time.Second,
+				}
+			}
+		}
+
 		return m, nil
 		
 	case SetProcessingMsg:
@@ -399,6 +442,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.processingText = msg.Text
 		if msg.Active {
 			m.processingSpinner = components.NewSpinnerComponent("")
+			// Check if this is for auto-compaction
+			if msg.Text == "Auto-compacting to save context..." {
+				return m, tea.Batch(
+					m.startAnimation(),
+					m.compactConversation(true), // true = auto
+				)
+			}
 			return m, m.startAnimation()
 		} else {
 			m.processingSpinner = nil
@@ -1185,8 +1235,50 @@ type EditorFinishedMsg struct {
 	Error   error
 }
 
+// shouldAutoCompact checks if we should trigger auto-compaction
+func (m Model) shouldAutoCompact() bool {
+	// Don't compact if already processing
+	if m.processing {
+		return false
+	}
+	
+	// Check if we're at or above 95% capacity
+	percentage := float64(m.contextTokens) / float64(m.maxContextTokens)
+	return percentage >= 0.95
+}
+
+// checkAutoCompaction returns a command if auto-compaction should be triggered
+func (m Model) checkAutoCompaction() tea.Cmd {
+	// First check for 90% warning
+	percentage := float64(m.contextTokens) / float64(m.maxContextTokens)
+	if percentage >= 0.90 && percentage < 0.95 && !m.processing {
+		// Show warning but don't compact yet
+		return func() tea.Msg {
+			return ShowStatuslineMsg{
+				Type:     components.StatuslineWarning,
+				Text:     fmt.Sprintf("Warning: Context usage at %.1f%%", percentage*100),
+				Duration: 5 * time.Second,
+			}
+		}
+	}
+	
+	// Check if we should auto-compact
+	if m.shouldAutoCompact() {
+		// Trigger auto-compaction
+		return func() tea.Msg {
+			// First set processing state
+			return SetProcessingMsg{
+				Text:   "Auto-compacting to save context...",
+				Active: true,
+			}
+		}
+	}
+	
+	return nil
+}
+
 // compactConversation summarizes the current conversation and clears history
-func (m Model) compactConversation() tea.Cmd {
+func (m Model) compactConversation(isAuto bool) tea.Cmd {
 	return func() tea.Msg {
 		// Build conversation history for summarization
 		conversation := m.buildConversationHistory()
@@ -1196,6 +1288,7 @@ func (m Model) compactConversation() tea.Cmd {
 			return CompactConversationMsg{
 				Summary: "",
 				Error:   fmt.Errorf("no conversation to compact"),
+				IsAuto:  isAuto,
 			}
 		}
 
@@ -1223,6 +1316,7 @@ func (m Model) compactConversation() tea.Cmd {
 			return CompactConversationMsg{
 				Summary: "",
 				Error:   fmt.Errorf("failed to generate summary: %w", err),
+				IsAuto:  isAuto,
 			}
 		}
 
@@ -1237,6 +1331,7 @@ func (m Model) compactConversation() tea.Cmd {
 		return CompactConversationMsg{
 			Summary: summary.String(),
 			Error:   nil,
+			IsAuto:  isAuto,
 		}
 	}
 }

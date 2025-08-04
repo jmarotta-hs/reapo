@@ -124,6 +124,7 @@ type OpenExternalEditorMsg struct{}
 type CompactConversationMsg struct {
 	Summary string
 	Error   error
+	IsAuto  bool // Whether this is an automatic compaction
 }
 
 // ShowStatuslineMsg displays a message in the statusline
